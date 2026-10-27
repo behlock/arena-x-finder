@@ -55,7 +55,6 @@ enum Application {
                     .appendingPathComponent("Are.na x Finder", isDirectory: true)
             let delegate = AppDelegate(store: try Store(directory: directory))
             app.delegate = delegate
-            app.servicesProvider = delegate
             NSUpdateDynamicServices()
             withExtendedLifetime(delegate) { app.run() }
         } catch {

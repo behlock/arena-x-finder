@@ -1,41 +1,35 @@
 import AppKit
 import ArenaCore
+import ArenaProvider
 
+/// Manages Finder locations. File transfers belong to the File Provider.
 @MainActor
-final class PickerController: NSWindowController {
+final class PickerController: NSWindowController, NSMenuDelegate {
     private let store: Store
-    private let uploader: Uploader
-    private var urls: [URL]
     private var client: ArenaClient?
     private var user: ArenaUser?
     private var nextPage: Int?
     private var loading = false
-    private var submitted = false
-    private var message = "Connect your Are.na account to get started."
-    private var skipped: [String] = []
+    private var message = ""
     private let stack = NSStackView()
     private let tokenField = NSSecureTextField()
     private let channelPicker = DestinationPicker()
-    private let sendButton = CircularSendButton(title: "Send", target: nil, action: nil)
+    private let accountLabel = PanelStyle.label("Connect your account", color: .secondaryLabelColor)
     private let statusLabel = PanelStyle.label("", color: .secondaryLabelColor, wrapping: true)
-    private let accountLabel = PanelStyle.label("Are.na x Finder", size: 18)
+    private let optionsButton = NSPopUpButton(frame: .zero, pullsDown: true)
     private var setup: NSView!
-    private var preview: ImagePreviewStrip?
-    private var accountButton: NSButton!
+    private var channelPanel: NSView!
     private var connectButton: NSButton!
-    private var refreshButton: NSButton!
-    private var moreButton: NSButton!
-    private var addButton: NSButton!
-    private var resumeButton: NSButton!
-    private var discardButton: NSButton!
-    private var reviewButton: NSButton!
     private var finderButton: NSButton!
-    private var finderRefreshButton: NSButton!
-    private var queueLabel = PanelStyle.label("", color: .secondaryLabelColor, wrapping: true)
+    private var addButton: NSButton!
+    private var refreshItem: NSMenuItem!
+    private var moreItem: NSMenuItem!
+    private var reviewItem: NSMenuItem!
+    private var accountItem: NSMenuItem!
 
-    init(store: Store, uploader: Uploader, urls: [URL]) {
-        self.store = store; self.uploader = uploader; self.urls = urls
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 480),
+    init(store: Store) {
+        self.store = store
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 330),
                               styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "Are.na x Finder"
         window.titleVisibility = .hidden
@@ -45,62 +39,46 @@ final class PickerController: NSWindowController {
         window.isReleasedWhenClosed = false
         window.contentView = PanelSurface(color: PanelStyle.background, radius: 0)
         super.init(window: window)
-        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 14
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 16
         stack.detachesHiddenViews = true
         stack.translatesAutoresizingMaskIntoConstraints = false
-        accountButton = button("Account…", #selector(showAccount))
-        addRow(NSStackView(views: [accountLabel, accountButton]))
-        if !urls.isEmpty {
-            let preview = ImagePreviewStrip(urls: urls)
-            preview.onSizeChange = { [weak self] in self?.fitWindow() }
-            preview.onRemove = { [weak self] index in
-                guard let self, !self.busy, !self.submitted else { return }
-                self.urls.remove(at: index); self.refresh()
-            }
-            self.preview = preview; addRow(preview)
-        }
-        tokenField.placeholderString = "Personal access token (write access)"
+
+        let title = PanelStyle.label("Are.na x Finder", size: 20)
+        title.font = .systemFont(ofSize: 20, weight: .semibold)
+        let heading = NSStackView(views: [title, NSView(), optionsButton])
+        heading.alignment = .centerY
+        configureMenu()
+        addRow(heading)
+        addRow(accountLabel)
+
+        tokenField.placeholderString = "Personal access token"
         tokenField.setAccessibilityLabel("Are.na personal access token")
         tokenField.heightAnchor.constraint(equalToConstant: 28).isActive = true
         connectButton = button("Connect", #selector(connect))
-        let help = PanelStyle.label("Create a token with write access, then paste it here. It is saved in your Mac’s Keychain.", wrapping: true)
-        let setupStack = column([help, tokenField, NSStackView(views: [button("Get access token ↗", #selector(openTokens)), connectButton])])
-        setup = PanelStyle.surface(around: setupStack); addRow(setup)
+        let help = PanelStyle.label("Use a token with write access to upload from Finder. Your token is saved in Keychain.", wrapping: true)
+        setup = PanelStyle.surface(around: column([help, tokenField,
+            NSStackView(views: [button("Get access token", #selector(openTokens)), connectButton])]))
+        addRow(setup)
+
         channelPicker.onChange = { [weak self] in self?.refresh() }
-        sendButton.target = self; sendButton.action = #selector(send)
-        sendButton.keyEquivalent = "\r"; sendButton.isBordered = false
-        sendButton.setAccessibilityLabel("Send images to Are.na")
-        sendButton.widthAnchor.constraint(equalToConstant: 54).isActive = true
-        sendButton.heightAnchor.constraint(equalToConstant: 54).isActive = true
-        let sendRow = NSStackView(views: [channelPicker, sendButton])
-        sendRow.spacing = 12; sendRow.alignment = .centerY
-        channelPicker.widthAnchor.constraint(equalTo: sendRow.widthAnchor, constant: -66).isActive = true
-        addRow(PanelStyle.surface(around: sendRow))
-        refreshButton = button("Refresh", #selector(reloadChannels))
-        moreButton = button("Load more", #selector(loadMore))
-        addButton = button("Add channel URL…", #selector(addChannel))
-        addRow(NSStackView(views: [refreshButton, moreButton, addButton]))
-        finderButton = button("Show channel in Finder", #selector(addToFinder))
-        finderRefreshButton = button("Refresh Finder", #selector(refreshFinder))
-        addRow(NSStackView(views: [finderButton, finderRefreshButton]))
-        addRow(button("Review Finder uploads…", #selector(reviewFinderUploads)))
+        finderButton = button("Add to Finder", #selector(showSelectedChannel))
+        finderButton.keyEquivalent = "\r"
+        finderButton.bezelColor = .controlAccentColor
+        addButton = button("Add by URL…", #selector(addChannel))
+        let actions = NSStackView(views: [finderButton, addButton])
+        actions.spacing = 8
+        channelPanel = PanelStyle.surface(around: column([
+            PanelStyle.label("Channel", color: .secondaryLabelColor), channelPicker, actions
+        ]))
+        addRow(channelPanel)
+        addRow(PanelStyle.label("Copy or drag files into a writable channel folder in Finder to upload.", wrapping: true))
         addRow(statusLabel)
-        addRow(queueLabel)
-        resumeButton = button("Resume", #selector(resume))
-        reviewButton = button("Review upload…", #selector(review))
-        discardButton = button("Discard batch…", #selector(discard))
-        addRow(NSStackView(views: [resumeButton, reviewButton, discardButton]))
         window.contentView!.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 24),
             stack.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -24),
             stack.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 48)
         ])
-        uploader.onChange = { [weak self] in
-            guard let self else { return }
-            if !self.uploader.status.isEmpty { self.message = self.uploader.status }
-            self.refresh()
-        }
         refresh()
         Task {
             do { if let token = try TokenStore.read() { await authenticate(token) } }
@@ -109,15 +87,42 @@ final class PickerController: NSWindowController {
     }
 
     required init?(coder: NSCoder) { nil }
-    private var busy: Bool { loading || store.isPreparingImages || uploader.isRunning }
     private var selected: Destination? { store.destinations.first { $0.id == channelPicker.selectedID } }
-    private var uncertain: (Job, QueuedImage)? {
-        for job in store.jobs {
-            if let image = job.images.first(where: { job.creating.contains($0.id) && job.blockIDs[$0.id] == nil && !job.completed.contains($0.id) }) { return (job, image) }
-        }
-        return nil
-    }
+    private var finderChannels: [FinderChannel] { (try? ProviderPaths.configuration().channels) ?? [] }
+    private var selectionIsInFinder: Bool { selected.map { choice in finderChannels.contains { $0.id == choice.channelID } } ?? false }
 
+    private func configureMenu() {
+        let menu = NSMenu(); menu.autoenablesItems = false; menu.delegate = self
+        let title = NSMenuItem(title: "Options", action: nil, keyEquivalent: "")
+        title.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "Options")
+        menu.addItem(title)
+        refreshItem = menuItem("Refresh channels and Finder", #selector(refreshAll), in: menu)
+        moreItem = menuItem("Load more channels…", #selector(loadMore), in: menu)
+        menu.addItem(.separator())
+        accountItem = menuItem("Account…", #selector(showAccount), in: menu)
+        reviewItem = menuItem("Review interrupted uploads…", #selector(reviewFinderUploads), in: menu)
+        optionsButton.menu = menu
+        optionsButton.imagePosition = .imageOnly
+        optionsButton.isBordered = false
+        optionsButton.setAccessibilityLabel("Options")
+        optionsButton.toolTip = "Account, refresh, and upload recovery"
+        optionsButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
+    }
+    private func menuItem(_ title: String, _ action: Selector, in menu: NSMenu) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self; menu.addItem(item); return item
+    }
+    func menuWillOpen(_ menu: NSMenu) { updateMenu() }
+    private func updateMenu() {
+        refreshItem.isEnabled = client != nil && !loading
+        moreItem.isHidden = nextPage == nil
+        moreItem.isEnabled = client != nil && !loading
+        accountItem.isEnabled = !loading
+        let directory = try? ProviderPaths.groupDirectory().appendingPathComponent("provider-live")
+        let interrupted = directory.flatMap { try? ProviderEngine.interruptedUploads(in: $0) } ?? []
+        reviewItem.isHidden = interrupted.isEmpty
+        reviewItem.isEnabled = !loading
+    }
     private func button(_ title: String, _ action: Selector) -> NSButton {
         let button = NSButton(title: title, target: self, action: action)
         button.bezelStyle = .rounded
@@ -125,7 +130,7 @@ final class PickerController: NSWindowController {
     }
     private func column(_ views: [NSView]) -> NSStackView {
         let result = NSStackView(views: views)
-        result.orientation = .vertical; result.alignment = .leading; result.spacing = 10
+        result.orientation = .vertical; result.alignment = .leading; result.spacing = 12
         views.forEach { $0.widthAnchor.constraint(equalTo: result.widthAnchor).isActive = true }
         return result
     }
@@ -143,48 +148,38 @@ final class PickerController: NSWindowController {
         window.setFrame(frame, display: true)
     }
     override func showWindow(_ sender: Any?) {
+        refresh()
         window?.center()
         super.showWindow(sender)
     }
-
     private func refresh() {
         channelPicker.update(store.destinations, rememberedID: store.lastDestinationID)
-        channelPicker.isEnabled = client != nil && !busy && !submitted
-        preview?.allowsRemoval = !busy && !submitted
-        sendButton.isEnabled = client != nil && selected != nil && !urls.isEmpty && !busy && !submitted && store.jobs.isEmpty
-        sendButton.phase = uploader.isRunning || store.isPreparingImages ? .sending : .ready
-        accountLabel.stringValue = user.map { "Connected as \($0.name)" } ?? "Are.na x Finder"
-        accountLabel.font = .systemFont(ofSize: user == nil ? 18 : 14, weight: .medium)
-        accountButton.isEnabled = !busy
-        connectButton.isEnabled = !busy
-        tokenField.isEnabled = !busy
-        refreshButton.isEnabled = client != nil && !busy
-        moreButton.isEnabled = client != nil && nextPage != nil && !busy
-        addButton.isEnabled = client != nil && !busy
-        finderButton.isEnabled = client != nil && selected != nil && !busy
-        finderRefreshButton.isEnabled = client != nil && !busy
-        resumeButton.isEnabled = client != nil && !busy && !store.jobs.isEmpty && uncertain == nil
-        reviewButton.isHidden = uncertain == nil
-        reviewButton.isEnabled = !busy
-        discardButton.isEnabled = !busy && !store.jobs.isEmpty
-        let queued = store.jobs.reduce(0) { $0 + $1.images.count - $1.completed.count }
-        queueLabel.stringValue = queued == 0 ? "" : "\(queued) image(s) queued. Next: \(store.jobs.first!.destination.name)."
-        queueLabel.isHidden = queued == 0
-        statusLabel.stringValue = uploader.isRunning ? uploader.status : message
-        if !skipped.isEmpty { statusLabel.stringValue += "\nSkipped: " + skipped.joined(separator: "\n") }
+        channelPicker.isEnabled = client != nil && !loading
+        channelPanel.isHidden = client == nil
+        accountLabel.stringValue = user.map { account in
+            let count = finderChannels.count
+            return "\(account.name) · \(count) \(count == 1 ? "folder" : "folders") in Finder"
+        } ?? (loading ? "Connecting…" : "Connect your account")
+        connectButton.isEnabled = !loading
+        tokenField.isEnabled = !loading
+        finderButton.title = selectionIsInFinder ? "Open in Finder" : "Add to Finder"
+        finderButton.isEnabled = client != nil && selected != nil && !loading
+        addButton.isEnabled = client != nil && !loading
+        statusLabel.stringValue = message
+        statusLabel.isHidden = message.isEmpty
+        updateMenu()
         fitWindow()
     }
-
     @objc private func openTokens() { NSWorkspace.shared.open(URL(string: "https://www.are.na/settings/personal-access-tokens")!) }
     @objc private func showAccount() { setup.isHidden.toggle(); fitWindow() }
     @objc private func connect() {
         let token = tokenField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !token.isEmpty, !busy else { return }
+        guard !token.isEmpty, !loading else { return }
         Task { await authenticate(token) }
     }
     private func authenticate(_ token: String) async {
         guard !loading else { return }
-        loading = true; client = nil; user = nil; message = "Connecting…"; refresh()
+        loading = true; client = nil; user = nil; message = ""; refresh()
         defer { loading = false; refresh() }
         do {
             let candidate = ArenaClient(token: token)
@@ -194,37 +189,42 @@ final class PickerController: NSWindowController {
             try TokenStore.save(token)
             client = candidate; user = account
             tokenField.stringValue = ""; setup.isHidden = true
-            message = urls.isEmpty ? "Select images in Finder, then choose Services → Send to Are.na." : "Choose a channel and send."
             try await fetchChannels(page: 1)
         } catch { message = error.localizedDescription }
     }
     private func fetchChannels(page: Int) async throws {
         guard let client, let user else { return }
         let result = try await client.channels(userID: user.id, page: page)
-        for channel in result.data where channel.can?.add_to != false { try store.save(channel.destination) }
+        for channel in result.data { try store.save(channel.destination) }
         nextPage = result.meta.next_page
-        if store.destinations.isEmpty { message = "No channels loaded. Add a channel URL, or load the next page." }
+        if store.destinations.isEmpty { message = "No channels found. Add one by URL." }
     }
-    @objc private func reloadChannels() { loadChannels(page: 1) }
-    @objc private func addToFinder() {
-        guard !busy, let client, let user, let selected else { return }
-        loading = true; message = "Adding channel to Finder…"; refresh()
+    @objc private func showSelectedChannel() {
+        guard !loading, let client, let user, let selected else { return }
+        let alreadyAdded = selectionIsInFinder
+        loading = true; message = alreadyAdded ? "Opening folder…" : "Adding folder…"; refresh()
         Task {
             do {
-                let channel = try await client.channel(selected.slug)
-                if let token = try TokenStore.read() { try TokenStore.save(token) }
-                try await FinderBridge.addChannel(channel, accountID: user.id)
-                message = "Channel added. Drop files into its Finder folder to upload."
+                if alreadyAdded { try await FinderBridge.revealChannel(selected.channelID) }
+                else {
+                    let channel = try await client.channel(selected.slug)
+                    try await FinderBridge.addChannel(channel, accountID: user.id)
+                }
+                message = ""
             } catch { message = error.localizedDescription }
             loading = false; refresh()
         }
     }
-    @objc private func refreshFinder() {
-        guard !busy else { return }
-        loading = true; refresh()
+    @objc private func refreshAll() {
+        guard !loading, client != nil else { return }
+        loading = true; message = "Refreshing…"; refresh()
         Task {
-            do { try await FinderBridge.refresh(); message = "Finder refresh requested." }
-            catch { message = error.localizedDescription }
+            var errors: [String] = []
+            do { try await fetchChannels(page: 1) } catch { errors.append(error.localizedDescription) }
+            if !finderChannels.isEmpty {
+                do { try await FinderBridge.refresh() } catch { errors.append(error.localizedDescription) }
+            }
+            message = errors.isEmpty ? "Up to date." : errors.joined(separator: "\n")
             loading = false; refresh()
         }
     }
@@ -233,87 +233,40 @@ final class PickerController: NSWindowController {
         do { try FinderBridge.reviewUploads(window: window) }
         catch { message = error.localizedDescription; refresh() }
     }
-    @objc private func loadMore() { if let nextPage { loadChannels(page: nextPage) } }
-    private func loadChannels(page: Int) {
-        guard !busy else { return }
-        loading = true; refresh()
+    @objc private func loadMore() {
+        guard !loading, let nextPage else { return }
+        loading = true; message = "Loading channels…"; refresh()
         Task {
-            do { try await fetchChannels(page: page); message = "Channels updated." }
+            do { try await fetchChannels(page: nextPage); message = "" }
             catch { message = error.localizedDescription }
             loading = false; refresh()
         }
     }
     @objc private func addChannel() {
-        guard !busy, let client, let window else { return }
+        guard !loading, let client, let user, let window else { return }
         let alert = NSAlert()
-        alert.messageText = "Add an Are.na channel"
-        alert.informativeText = "Paste a channel URL or slug. This also works for shared channels you can add to."
+        alert.messageText = "Add a channel to Finder"
+        alert.informativeText = "Paste an Are.na channel URL. Private and shared channels work when your account can access them."
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 26))
+        field.placeholderString = "https://www.are.na/…"
         alert.accessoryView = field
-        alert.addButton(withTitle: "Add"); alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Add to Finder"); alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
             let input = field.stringValue
-            self.loading = true; self.refresh()
+            self.loading = true; self.message = "Adding folder…"; self.refresh()
             Task { @MainActor in
                 do {
                     let channel = try await client.channel(input)
-                    guard channel.can?.add_to == true else { throw BridgeError.message("You don’t have permission to add to this channel.") }
                     try self.store.save(channel.destination)
-                    self.message = "Added \(channel.title)."
+                    self.channelPicker.update(self.store.destinations, rememberedID: self.store.lastDestinationID)
+                    self.channelPicker.select(channel.destination.id)
+                    try await FinderBridge.addChannel(channel, accountID: user.id)
+                    self.message = ""
                 } catch { self.message = error.localizedDescription }
                 self.loading = false; self.refresh()
             }
         }
         window.makeFirstResponder(field)
-    }
-    @objc private func send() {
-        guard !busy, !submitted, store.jobs.isEmpty, let client, let user, let destination = selected, !urls.isEmpty else { return }
-        loading = true; message = "Preparing images…"; refresh()
-        Task {
-            do {
-                let channel = try await client.channel(destination.slug)
-                guard channel.id == destination.channelID, channel.can?.add_to == true else {
-                    throw BridgeError.message("You can no longer add to this channel. Choose another destination.")
-                }
-                let result = try await store.enqueue(urls, destination: destination)
-                submitted = true; skipped = result.skipped; loading = false
-                await uploader.run(client: client, accountID: user.id, jobID: result.job.id)
-            } catch { message = error.localizedDescription }
-            loading = false; refresh()
-        }
-    }
-    @objc private func resume() {
-        guard !busy, uncertain == nil, let client, let user else { return }
-        Task { await uploader.run(client: client, accountID: user.id); refresh() }
-    }
-    @objc private func review() {
-        guard !busy, let (job, image) = uncertain, let window else { return }
-        NSWorkspace.shared.open(job.destination.url)
-        let alert = NSAlert()
-        alert.messageText = "Was \(image.name) added?"
-        alert.informativeText = "Check \(job.destination.name) in Are.na. The connection was interrupted before we could save the result. Only retry if the image is missing."
-        alert.addButton(withTitle: "Already added"); alert.addButton(withTitle: "Missing — allow retry"); alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard let self else { return }
-            do {
-                if response == .alertFirstButtonReturn { try self.store.acknowledge(jobID: job.id, imageID: image.id) }
-                else if response == .alertSecondButtonReturn { try self.store.updateJob(job.id) { $0.creating.remove(image.id); $0.lastError = nil } }
-            } catch { self.message = error.localizedDescription }
-            self.refresh()
-        }
-    }
-    @objc private func discard() {
-        guard !busy, let job = store.jobs.first, let window else { return }
-        let alert = NSAlert()
-        alert.messageText = "Discard the queued batch for \(job.destination.name)?"
-        alert.informativeText = "This removes the local queued copies. Your original files and blocks already added to Are.na stay in place."
-        alert.addButton(withTitle: "Cancel"); alert.addButton(withTitle: "Discard batch")
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard let self, response == .alertSecondButtonReturn else { return }
-            do { try self.store.discard(jobID: job.id); self.message = "Queued batch discarded." }
-            catch { self.message = error.localizedDescription }
-            self.refresh()
-        }
     }
 }

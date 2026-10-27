@@ -11,8 +11,8 @@ final class DestinationPicker: PanelPillButton {
 
     init() {
         super.init(frame: .zero)
-        setAccessibilityLabel("Are.na destination")
-        toolTip = "Choose a destination"
+        setAccessibilityLabel("Are.na channel")
+        toolTip = "Choose a channel"
         target = self
         action = #selector(openChoices)
         popover.behavior = .transient
@@ -29,6 +29,12 @@ final class DestinationPicker: PanelPillButton {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    func select(_ id: String) {
+        guard options.contains(where: { $0.id == id }) else { return }
+        selectedID = id
+        updateTitle()
+    }
 
     func update(_ destinations: [Destination], rememberedID: String?) {
         if !destinations.contains(where: { $0.id == selectedID }) {
@@ -50,7 +56,7 @@ final class DestinationPicker: PanelPillButton {
     }
 
     private func updateTitle() {
-        let updated = options.first(where: { $0.id == selectedID })?.pickerTitle ?? "No saved destinations"
+        let updated = options.first(where: { $0.id == selectedID })?.pickerTitle ?? "Choose a channel"
         guard title != updated else { return }
         title = updated
         setAccessibilityValue(title)

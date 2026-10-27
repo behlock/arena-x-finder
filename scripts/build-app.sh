@@ -21,8 +21,6 @@ cp App/Info.plist "$app/Contents/Info.plist"
 worker="$app/Contents/Helpers/ArenaThumbnailWorker.app"
 mkdir -p "$worker/Contents/MacOS"
 cp "$bin/ArenaFinder" "$worker/Contents/MacOS/ArenaThumbnailWorker"
-# Advertise exactly the image decoders available on this macOS version.
-swift scripts/configure-image-service.swift "$app/Contents/Info.plist"
 extension="$app/Contents/PlugIns/ArenaProvider.appex"
 mkdir -p "$extension/Contents/MacOS"
 cp App/Provider-Info.plist "$extension/Contents/Info.plist"

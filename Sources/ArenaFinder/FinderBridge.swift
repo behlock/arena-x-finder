@@ -39,6 +39,11 @@ enum FinderBridge {
         let url = try await manager.getUserVisibleURL(for: .rootContainer)
         NSWorkspace.shared.open(url)
     }
+    static func revealChannel(_ channelID: Int) async throws {
+        guard let manager = NSFileProviderManager(for: liveDomain) else { throw BridgeError.message("The Finder extension is not installed.") }
+        let url = try await manager.getUserVisibleURL(for: NSFileProviderItemIdentifier("channel-\(channelID)"))
+        NSWorkspace.shared.open(url)
+    }
     static func signal(_ domain: NSFileProviderDomain, channels: [FinderChannel]) async throws {
         guard let manager = NSFileProviderManager(for: domain) else { throw BridgeError.message("The Finder extension is not installed.") }
         try await manager.signalEnumerator(for: .rootContainer)

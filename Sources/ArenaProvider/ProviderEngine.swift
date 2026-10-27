@@ -36,7 +36,6 @@ public actor ProviderEngine {
         var records: [String: ProviderRecord] = [:]
         var loadedPages: [String: [String]] = [:]
         var pageGenerations: [String: Int] = [:]
-        var generation: Int = -1
         var listingPageSize: Int?
         var nestedChannelFolders: Bool?
         var pageFetchedAt: [String: Date]?
@@ -44,7 +43,7 @@ public actor ProviderEngine {
         var revision: Int = 0
         var changes: [Change] = []
     }
-    struct Change: Codable { let revision: Int; let id: String; let deleted: Bool; var parent: String? }
+    struct Change: Codable { let revision: Int; let id: String; var parent: String? }
     private var snapshot: Snapshot
     private let backend: any ProviderBackend
     private let directory: URL
@@ -78,7 +77,7 @@ public actor ProviderEngine {
         guard snapshot.records[record.id] != record else { return }
         snapshot.records[record.id] = record
         snapshot.revision += 1
-        snapshot.changes.append(Change(revision: snapshot.revision, id: record.id, deleted: false, parent: record.parent))
+        snapshot.changes.append(Change(revision: snapshot.revision, id: record.id, parent: record.parent))
     }
     private func forgetTree(_ id: String) {
         guard let record = snapshot.records[id] else { return }
@@ -90,13 +89,10 @@ public actor ProviderEngine {
         snapshot.pageFetchedAt?.removeValue(forKey: id)
         browseRetryAfter.removeValue(forKey: id)
         snapshot.revision += 1
-        snapshot.changes.append(Change(revision: snapshot.revision, id: id, deleted: true, parent: record.parent))
+        snapshot.changes.append(Change(revision: snapshot.revision, id: id, parent: record.parent))
     }
     private func loadConfiguration() throws -> FinderConfiguration {
         let config = try configuration()
-        if config.refreshGeneration != snapshot.generation {
-            snapshot.generation = config.refreshGeneration
-        }
         for channel in config.channels { remember(.channel(channel)) }
         updateWebsiteThumbnails()
         try persist()
@@ -239,9 +235,8 @@ public actor ProviderEngine {
     }
     public func revision() -> Int { snapshot.revision }
     public func refreshLoadedPages() async throws {
-        // macOS applies remote changes through the working-set enumerator. Only
-        // revisit pages the user previously opened, and only list()'s stale pages
-        // issue requests. Visit parents first in case they remove old page folders.
+        // Refresh only manually invalidated pages, parents first: refreshing a
+        // parent can remove its old pagination folders.
         let parents = snapshot.loadedPages.keys.sorted {
             (snapshot.records[$0].map { ancestors(of: $0).count } ?? 0) <
             (snapshot.records[$1].map { ancestors(of: $0).count } ?? 0)

@@ -1,34 +1,7 @@
 import XCTest
-import ImageIO
-import UniformTypeIdentifiers
 @testable import ArenaCore
 
 final class ArenaCoreTests: XCTestCase {
-    private var directory: URL!
-    override func setUpWithError() throws {
-        directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    }
-    override func tearDownWithError() throws { try FileManager.default.removeItem(at: directory) }
-
-    private func image() throws -> URL {
-        let url = directory.appendingPathComponent("reference 日本.png")
-        let context = try XCTUnwrap(CGContext(data: nil, width: 20, height: 10, bitsPerComponent: 8, bytesPerRow: 80,
-            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-        let output = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil))
-        CGImageDestinationAddImage(output, try XCTUnwrap(context.makeImage()), nil)
-        XCTAssertTrue(CGImageDestinationFinalize(output))
-        return url
-    }
-    @MainActor private func queued() async throws -> (Store, Job) {
-        let store = try Store(directory: directory.appendingPathComponent("data"))
-        try store.setAccount(42)
-        let destination = Destination(channelID: 99, name: "References", slug: "references")
-        try store.save(destination)
-        let result = try await store.enqueue([image()], destination: destination)
-        return (store, result.job)
-    }
-
     func testChannelInputOnlyAcceptsArenaURLsOrSlugs() throws {
         XCTAssertEqual(try ArenaClient.channelSlug("https://www.are.na/walidbehlock/references?sort=desc"), "references")
         XCTAssertEqual(try ArenaClient.channelSlug(" references "), "references")
@@ -36,6 +9,7 @@ final class ArenaCoreTests: XCTestCase {
             XCTAssertThrowsError(try ArenaClient.channelSlug(invalid))
         }
     }
+
     func testContentsRequestsOneHundredItemsWithoutFollowingNextPage() async throws {
         var requests: [URLRequest] = []
         let client = ArenaClient(token: "test", transport: { request in
@@ -50,93 +24,6 @@ final class ArenaCoreTests: XCTestCase {
         XCTAssertEqual(query.first { $0.name == "per" }?.value, "100")
         XCTAssertEqual(query.first { $0.name == "page" }?.value, "1")
         XCTAssertEqual(page.meta.next_page, 2)
-    }
-
-    @MainActor func testQueueSurvivesRestartAndDeletingOriginal() async throws {
-        let (store, job) = try await queued()
-        let original = directory.appendingPathComponent("reference 日本.png")
-        let bytes = try Data(contentsOf: original)
-        try FileManager.default.removeItem(at: original)
-        let reopened = try Store(directory: store.directory)
-        XCTAssertEqual(reopened.jobs.first?.accountID, 42)
-        XCTAssertEqual(reopened.lastDestinationID, "99")
-        XCTAssertEqual(try reopened.imageData(jobID: job.id, image: job.images[0]), bytes)
-        XCTAssertThrowsError(try reopened.setAccount(100))
-        let state = try String(contentsOf: store.directory.appendingPathComponent("state.json"))
-        XCTAssertFalse(state.contains("token"))
-    }
-
-    @MainActor func testUploadSendsBytesWithoutLeakingTokenAndUsesStructuredChannel() async throws {
-        let (store, job) = try await queued()
-        let mock = MockAPI()
-        let client = ArenaClient(token: "test-secret", transport: mock.send)
-        let uploader = Uploader(store: store)
-        await uploader.run(client: client, accountID: 42)
-        XCTAssertTrue(store.jobs.isEmpty, uploader.status)
-        XCTAssertEqual(mock.requests.count, 4)
-        let upload = try XCTUnwrap(mock.requests.first { $0.httpMethod == "PUT" })
-        XCTAssertNil(upload.value(forHTTPHeaderField: "Authorization"))
-        XCTAssertEqual(upload.value(forHTTPHeaderField: "Content-Type"), "image/png")
-        XCTAssertEqual(upload.httpBody, try Data(contentsOf: directory.appendingPathComponent("reference 日本.png")))
-        let create = try XCTUnwrap(mock.requests.first { $0.url?.path == "/v3/blocks" })
-        XCTAssertEqual(create.value(forHTTPHeaderField: "Authorization"), "Bearer test-secret")
-        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(create.httpBody)) as? [String: Any])
-        XCTAssertEqual(body["value"] as? String, "https://s3.amazonaws.com/arena_images-temp/uploads/test/image.png")
-        XCTAssertEqual((body["channels"] as? [[String: Int]])?.first?["id"], 99)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: store.directory.appendingPathComponent("queue/" + job.id).path))
-    }
-
-    @MainActor func testLostCreateResponseRequiresReviewAndNeverAutomaticallyReposts() async throws {
-        let (store, job) = try await queued()
-        let mock = MockAPI(); mock.loseCreateResponse = true
-        let client = ArenaClient(token: "test", transport: mock.send)
-        await Uploader(store: store).run(client: client, accountID: 42)
-        let reopened = try Store(directory: store.directory)
-        XCTAssertTrue(try XCTUnwrap(reopened.jobs.first).creating.contains(job.images[0].id))
-        let before = mock.requests.count
-        await Uploader(store: reopened).run(client: client, accountID: 42)
-        XCTAssertEqual(mock.requests.count, before)
-        XCTAssertEqual(mock.requests.filter { $0.url?.path == "/v3/blocks" }.count, 1)
-    }
-
-    @MainActor func testRateLimitAllowsExplicitRetryWithoutAmbiguousFlag() async throws {
-        let (store, job) = try await queued()
-        let mock = MockAPI(); mock.createStatus = 429
-        let uploader = Uploader(store: store)
-        await uploader.run(client: ArenaClient(token: "test", transport: mock.send), accountID: 42)
-        XCTAssertFalse(try XCTUnwrap(store.jobs.first).creating.contains(job.images[0].id))
-        XCTAssertTrue(uploader.status.contains("90 seconds"))
-        XCTAssertEqual(mock.requests.filter { $0.url?.path == "/v3/blocks" }.count, 1)
-    }
-
-    @MainActor func testKnownBlockResumesWithoutUploadingAgain() async throws {
-        let (store, job) = try await queued()
-        try store.updateJob(job.id) { $0.blockIDs[job.images[0].id] = 123 }
-        let reopened = try Store(directory: store.directory)
-        let mock = MockAPI()
-        await Uploader(store: reopened).run(client: ArenaClient(token: "test", transport: mock.send), accountID: 42)
-        XCTAssertTrue(reopened.jobs.isEmpty)
-        XCTAssertEqual(mock.requests.map { $0.url!.path }, ["/v3/blocks/123"])
-    }
-
-    @MainActor func testWrongAccountCannotSendQueuedImages() async throws {
-        let (store, _) = try await queued()
-        let mock = MockAPI()
-        await Uploader(store: store).run(client: ArenaClient(token: "test", transport: mock.send), accountID: 43)
-        XCTAssertTrue(mock.requests.isEmpty)
-        XCTAssertEqual(store.jobs.count, 1)
-    }
-
-    @MainActor func testPartialBatchResumesOnlyUnfinishedImages() async throws {
-        let (store, firstJob) = try await queued()
-        try store.discard(jobID: firstJob.id)
-        let original = try image()
-        let job = try await store.enqueue([original, original], destination: store.destinations[0]).job
-        try store.acknowledge(jobID: job.id, imageID: job.images[0].id)
-        let mock = MockAPI()
-        await Uploader(store: store).run(client: ArenaClient(token: "test", transport: mock.send), accountID: 42)
-        XCTAssertTrue(store.jobs.isEmpty)
-        XCTAssertEqual(mock.requests.filter { $0.url?.path == "/v3/blocks" }.count, 1)
     }
 
     func testChannelPaginationUsesOnePageAndDecodesPermissions() async throws {
@@ -165,25 +52,46 @@ final class ArenaCoreTests: XCTestCase {
             XCTFail("Unexpected destination should fail")
         } catch { XCTAssertEqual(count, 1) }
     }
-}
 
-private final class MockAPI {
-    var requests: [URLRequest] = []
-    var loseCreateResponse = false
-    var createStatus = 201
-    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        requests.append(request)
-        let path = request.url!.path
-        var json = "{}"
-        var status = 200
-        if path == "/v3/uploads/presign" {
-            json = #"{"files":[{"upload_url":"https://s3.amazonaws.com/arena_images-temp/uploads/test/image.png?signature=test","key":"uploads/test/image.png","content_type":"image/png"}],"expires_in":3600}"#
-            status = 201
-        } else if path == "/v3/blocks" {
-            if loseCreateResponse { throw URLError(.timedOut) }
-            status = createStatus; json = #"{"id":123,"state":"processing"}"#
-        } else if path == "/v3/blocks/123" { json = #"{"id":123,"state":"available"}"# }
-        else if request.httpMethod != "PUT" { XCTFail("Unexpected request: \(request.httpMethod ?? "") \(path)") }
-        return (Data(json.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: ["Retry-After": "90"])!)
+    func testUploadPreservesBytesAndKeepsCredentialsOffStorageRequests() async throws {
+        var requests: [URLRequest] = []
+        let client = ArenaClient(token: "test-secret") { request in
+            requests.append(request)
+            let json: String
+            switch request.url!.path {
+            case "/v3/uploads/presign":
+                json = #"{"files":[{"upload_url":"https://s3.amazonaws.com/arena_images-temp/uploads/test/file.bin?signature=test","key":"uploads/test/file.bin","content_type":"application/octet-stream"}]}"#
+            case "/v3/blocks": json = #"{"id":123,"state":"processing"}"#
+            default:
+                XCTAssertEqual(request.httpMethod, "PUT")
+                json = "{}"
+            }
+            return (Data(json.utf8), HTTPURLResponse(url: request.url!, statusCode: 201, httpVersion: nil, headerFields: nil)!)
+        }
+        let bytes = Data([0, 1, 255, 2])
+        let source = try await client.upload(bytes, filename: "file.bin", contentType: "application/octet-stream")
+        let block = try await client.createBlock(source: source, title: "file.bin", channelID: 99)
+        XCTAssertEqual(block.id, 123)
+        XCTAssertEqual(requests.count, 3)
+        let upload = requests[1]
+        XCTAssertNil(upload.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertEqual(upload.value(forHTTPHeaderField: "Content-Type"), "application/octet-stream")
+        XCTAssertEqual(upload.httpBody, bytes)
+        let create = requests[2]
+        XCTAssertEqual(create.value(forHTTPHeaderField: "Authorization"), "Bearer test-secret")
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(create.httpBody)) as? [String: Any])
+        XCTAssertEqual(body["value"] as? String, "https://s3.amazonaws.com/arena_images-temp/uploads/test/file.bin")
+        XCTAssertEqual((body["channels"] as? [[String: Int]])?.first?["id"], 99)
+    }
+
+    func testRateLimitRetainsRetryIntervalAndDefiniteRejection() async throws {
+        let client = ArenaClient(token: "test") { request in
+            (Data(), HTTPURLResponse(url: request.url!, statusCode: 429, httpVersion: nil, headerFields: ["Retry-After": "90"])!)
+        }
+        do { _ = try await client.me(); XCTFail("Expected a rate limit error") }
+        catch let error as APIError {
+            XCTAssertEqual(error.retryAfter, 90)
+            XCTAssertTrue(error.definiteRejection)
+        }
     }
 }

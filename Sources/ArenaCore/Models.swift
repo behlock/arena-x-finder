@@ -11,7 +11,6 @@ public enum BridgeError: LocalizedError {
 public struct ArenaUser: Decodable, Sendable {
     public let id: Int
     public let name: String
-    public let slug: String
 }
 
 public struct Channel: Decodable, Sendable {
@@ -37,37 +36,8 @@ public struct Destination: Codable, Equatable, Sendable {
     public init(channelID: Int, name: String, slug: String) {
         self.channelID = channelID; self.name = name; self.slug = slug
     }
-    public var url: URL { URL(string: "https://www.are.na/channel/\(slug)")! }
-}
-
-public struct QueuedImage: Codable, Sendable {
-    public let id: String
-    public let name: String
-    public let format: String
-    public let width: Int
-    public let height: Int
-    public var fileExtension: String { format == "jpeg" ? "jpg" : "png" }
-    public var contentType: String { format == "jpeg" ? "image/jpeg" : "image/png" }
-}
-
-public struct Job: Codable, Sendable {
-    public let id: String
-    public let accountID: Int
-    public let destination: Destination
-    public let images: [QueuedImage]
-    public var completed: Set<String> = []
-    // Written before creating a block. An interrupted POST needs human review.
-    public var creating: Set<String> = []
-    public var blockIDs: [String: Int] = [:]
-    public var lastError: String?
-}
-
-public struct EnqueueResult: Sendable {
-    public let job: Job
-    public let skipped: [String]
 }
 
 public struct ArenaBlock: Decodable, Sendable {
     public let id: Int
-    public let state: String
 }

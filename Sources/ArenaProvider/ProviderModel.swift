@@ -118,8 +118,7 @@ public struct ProviderRecord: Codable, Equatable, Sendable {
         } else {
             let source = block.source?.url
             let webURL = ["http", "https"].contains(source?.scheme?.lowercased() ?? "") ? source?.absoluteString : nil
-            let url = kind == "channel" ? "https://www.are.na/channel/\(block.slug ?? String(block.id))"
-                : webURL ?? "https://www.are.na/block/\(block.id)"
+            let url = webURL ?? "https://www.are.na/block/\(block.id)"
             record.inlineData = try PropertyListSerialization.data(fromPropertyList: ["URL": url], format: .xml, options: 0)
             record.typeIdentifier = "com.apple.web-internet-location"
             record.thumbnail = block.image?.small?.src

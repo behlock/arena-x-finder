@@ -7,55 +7,31 @@ enum Application {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         installMenus()
-        if CommandLine.arguments.contains("--thumbnail-changed") {
-            Task {
-                do { try await FinderBridge.signalThumbnailChanges(); exit(0) }
-                catch { exit(1) }
-            }
-            app.run()
-            return
+        let operation: (() async throws -> Void)?
+        switch CommandLine.arguments.dropFirst().first {
+        case "--thumbnail-changed": operation = FinderBridge.signalThumbnailChanges
+        case "--thumbnail-worker": operation = WebsiteThumbnailWorker.run
+        case "--finder-refresh": operation = FinderBridge.refresh
+        case "--finder-remove-demo": operation = FinderBridge.removeDemo
+        case "--finder-smoke": operation = FinderBridge.smoke
+        default: operation = nil
         }
-        if CommandLine.arguments.contains("--thumbnail-worker") {
+        if let operation {
             Task {
-                do { try await WebsiteThumbnailWorker.run(); exit(0) }
-                catch { fputs("Website thumbnail worker stopped.\n", stderr); exit(1) }
-            }
-            app.run()
-            return
-        }
-        if CommandLine.arguments.contains("--finder-refresh") {
-            Task {
-                do { try await FinderBridge.refresh(); print("Finder refresh requested."); exit(0) }
-                catch { fputs("Could not refresh Finder: \(error)\n", stderr); exit(1) }
-            }
-            app.run()
-            return
-        }
-        if CommandLine.arguments.contains("--finder-remove-demo") {
-            Task {
-                do { try await FinderBridge.removeDemo(); exit(0) }
-                catch { fputs("Could not remove demo: \(error)\n", stderr); exit(1) }
-            }
-            app.run()
-            return
-        }
-        if CommandLine.arguments.contains("--finder-smoke") {
-            Task {
-                do { try await FinderBridge.smoke(); exit(0) }
-                catch { fputs("Finder smoke test: \(error)\n", stderr); exit(1) }
+                do { try await operation(); exit(0) }
+                catch { fputs("Are.na x Finder: \(error.localizedDescription)\n", stderr); exit(1) }
             }
             app.run()
             return
         }
         do {
-            try handOverFromOtherCopies()
+            try requireSingleInstance()
             let override = ProcessInfo.processInfo.environment["ARENA_FINDER_DATA_DIR"]
             let directory = override.map { URL(fileURLWithPath: $0) }
                 ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                     .appendingPathComponent("Are.na x Finder", isDirectory: true)
             let delegate = AppDelegate(store: try Store(directory: directory))
             app.delegate = delegate
-            NSUpdateDynamicServices()
             withExtendedLifetime(delegate) { app.run() }
         } catch {
             let alert = NSAlert()
@@ -83,11 +59,11 @@ enum Application {
         NSApp.mainMenu = menu
     }
 
-    @MainActor private static func handOverFromOtherCopies() throws {
+    @MainActor private static func requireSingleInstance() throws {
         guard let bundleID = Bundle.main.bundleIdentifier else { return }
         let copies = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
             .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
         guard !copies.isEmpty else { return }
-        throw BridgeError.message("Are.na x Finder is already running. Open the existing app from Applications. Queued uploads are retained.")
+        throw BridgeError.message("Are.na x Finder is already running. Open the existing app from Applications.")
     }
 }

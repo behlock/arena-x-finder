@@ -1,8 +1,7 @@
 import Foundation
 import CryptoKit
 
-/// A small shared-container queue. The sandboxed provider never launches a browser
-/// or writes custom icons to cloud files; the signed host renders these requests.
+/// Shares preview requests between the sandboxed provider and the renderer.
 public struct WebsiteThumbnailStore {
     public struct Request: Codable {
         public let url: URL
@@ -41,7 +40,7 @@ public struct WebsiteThumbnailStore {
         try JSONEncoder().encode(Request(url: url)).write(to: request, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: request.path)
     }
-    public func pending() throws -> [(URL, Request)] {
+    public func pending() throws -> [Request] {
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "request" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
@@ -49,7 +48,7 @@ public struct WebsiteThumbnailStore {
                 guard let data = try? Data(contentsOf: file), data.count < 64 * 1024,
                       let request = try? JSONDecoder().decode(Request.self, from: data), Self.valid(request.url),
                       file.deletingPathExtension().lastPathComponent == Self.key(request.url) else { return nil }
-                return (file, request)
+                return request
             }
     }
     public func complete(_ url: URL, png: Data?) throws {

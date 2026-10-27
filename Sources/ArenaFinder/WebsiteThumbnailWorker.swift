@@ -13,7 +13,7 @@ enum WebsiteThumbnailWorker {
         let capture = PageCapture(dataStore: .nonPersistent())
         while !Task.isCancelled {
             let pending = try store.pending()
-            for (_, request) in pending {
+            for request in pending {
                 try Task.checkCancellation()
                 do {
                     let screenshot = try await capture.capture(request.url, timeout: 20)

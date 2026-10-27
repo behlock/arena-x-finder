@@ -14,8 +14,6 @@ public final class ArenaFileProviderExtension: NSObject, NSFileProviderReplicate
             let backend: any ProviderBackend
             if demo {
                 backend = try DemoProviderBackend(directory: directory.appendingPathComponent("remote"))
-                let token = try? CredentialVault.read(service: "com.behlock.arena-x-finder.smoke", interactive: false)
-                try? JSONEncoder().encode(["sharedKeychainReadable": token == "local-smoke-value"]).write(to: group.appendingPathComponent("provider-smoke.json"), options: .atomic)
             } else {
                 backend = LiveProviderBackend(credentials: {
                     guard let token = try CredentialVault.read(interactive: false), !token.isEmpty else { throw NSFileProviderError(.notAuthenticated) }

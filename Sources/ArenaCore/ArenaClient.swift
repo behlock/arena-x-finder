@@ -10,7 +10,7 @@ public struct APIError: LocalizedError {
         case 403: return "Are.na denied access. Check that your token has write access and you can add to this channel."
         case 404: return "This channel or block is no longer available."
         case 429: return "Are.na’s rate limit was reached. Try again after \(retryAfter ?? 60) seconds."
-        default: return "Are.na returned HTTP \(status). Your unfinished images remain queued."
+        default: return "Are.na returned HTTP \(status)."
         }
     }
 }
@@ -52,7 +52,6 @@ public final class ArenaClient {
         let slug = try Self.channelSlug(input)
         return try await request("channels/\(slug)")
     }
-    public func block(_ id: Int) async throws -> ArenaBlock { try await request("blocks/\(id)") }
     public func contents(channelID: Int, page: Int) async throws -> BlockPage {
         try await request("channels/\(channelID)/contents?per=\(Self.channelContentsPageSize)&page=\(page)&sort=position_desc")
     }
@@ -91,7 +90,7 @@ public final class ArenaClient {
         upload.httpBody = bytes
         // Never send the Are.na bearer token to the storage provider.
         let (_, response) = try await transport(upload)
-        guard (200..<300).contains(response.statusCode) else { throw BridgeError.message("Image upload failed (HTTP \(response.statusCode)). Try again.") }
+        guard (200..<300).contains(response.statusCode) else { throw BridgeError.message("File upload failed (HTTP \(response.statusCode)). Try again.") }
         var url = URLComponents(string: "https://s3.amazonaws.com")!
         url.path = "/arena_images-temp/" + file.key
         return url.url!

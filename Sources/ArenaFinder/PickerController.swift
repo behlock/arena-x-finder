@@ -53,7 +53,12 @@ final class PickerController: NSWindowController, NSMenuDelegate {
             NSStackView(views: [button("Get token", #selector(openTokens)), connectButton])]))
         addRow(setup)
 
-        channelPicker.onChange = { [weak self] in self?.refresh() }
+        channelPicker.onChange = { [weak self] in
+            guard let self else { return }
+            do { if let id = self.channelPicker.selectedID { try self.store.select(id) } }
+            catch { self.message = error.localizedDescription }
+            self.refresh()
+        }
         channelPicker.onLoadMore = { [weak self] in self?.loadMore() }
         finderButton = button("Add to Finder", #selector(showSelectedChannel))
         finderButton.keyEquivalent = "\r"
@@ -84,7 +89,7 @@ final class PickerController: NSWindowController, NSMenuDelegate {
         ])
         refresh()
         Task {
-            do { if let token = try TokenStore.read() { await authenticate(token, saveToken: false) } }
+            do { if let token = try CredentialVault.read() { await authenticate(token, saveToken: false) } }
             catch { message = error.localizedDescription; refresh() }
         }
     }

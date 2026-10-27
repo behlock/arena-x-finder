@@ -349,7 +349,6 @@ final class ProviderTests: XCTestCase {
         snapshot.records = ["channel-1": .channel(DemoProviderBackend.channel), shortcut.id: shortcut]
         snapshot.loadedPages = ["channel-1": [shortcut.id]]
         snapshot.pageGenerations = ["channel-1": 0]
-        snapshot.generation = 0
         snapshot.listingPageSize = ArenaClient.channelContentsPageSize
         try JSONEncoder().encode(snapshot).write(to: state.appendingPathComponent("provider-state.json"))
         let engine = try engine(GraphBackend())

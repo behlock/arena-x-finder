@@ -84,6 +84,97 @@ final class ProviderTests: XCTestCase {
         XCTAssertEqual(counts.0, [1, 1])
         XCTAssertEqual(counts.1, 0)
     }
+    func testOpeningStaleFolderRefreshesOnlyThatPageAndPublishesRemovals() async throws {
+        let backend = TestBackend()
+        let clock = BrowseClock()
+        let engine = try ProviderEngine(directory: directory.appendingPathComponent("state"), backend: backend, now: { clock.now }) {
+            FinderConfiguration(accountID: 1, channels: [DemoProviderBackend.channel])
+        }
+        _ = try await engine.list("channel-1")
+        _ = try await engine.list("page-1-2")
+        _ = try await engine.refreshForBrowsing("channel-1")
+        clock.advance(16)
+        // Thumbnail signals and indexing must not turn into background polling.
+        try await engine.refreshLoadedPages()
+        _ = try await engine.list("working")
+        var counts = await backend.counts()
+        XCTAssertEqual(counts.0, [1, 2])
+        let anchor = await engine.revision()
+        await backend.emptyListing()
+        let changed = try await engine.refreshForBrowsing("channel-1")
+        XCTAssertTrue(changed)
+        let changes = try await engine.changes(after: anchor)
+        XCTAssertTrue(changes.deleted.contains("block-1-1"))
+        XCTAssertTrue(changes.deleted.contains("page-1-2"))
+        counts = await backend.counts()
+        XCTAssertEqual(counts.0, [1, 2, 1])
+        XCTAssertEqual(counts.1, 0)
+    }
+    func testBrowseFreshnessSurvivesRestartAndOldSnapshotsRefreshOnOpen() async throws {
+        let backend = TestBackend()
+        let clock = BrowseClock()
+        let state = directory.appendingPathComponent("state")
+        func makeEngine() throws -> ProviderEngine {
+            try ProviderEngine(directory: state, backend: backend, now: { clock.now }) {
+                FinderConfiguration(accountID: 1, channels: [DemoProviderBackend.channel])
+            }
+        }
+        let first = try makeEngine()
+        _ = try await first.list("channel-1")
+        let restarted = try makeEngine()
+        _ = try await restarted.refreshForBrowsing("channel-1")
+        var counts = await backend.counts()
+        XCTAssertEqual(counts.0, [1])
+        clock.advance(16)
+        _ = try await restarted.refreshForBrowsing("channel-1")
+        counts = await backend.counts()
+        XCTAssertEqual(counts.0, [1, 1])
+        let url = state.appendingPathComponent("provider-state.json")
+        var snapshot = try JSONDecoder().decode(ProviderEngine.Snapshot.self, from: Data(contentsOf: url))
+        snapshot.pageFetchedAt = nil
+        try JSONEncoder().encode(snapshot).write(to: url)
+        let upgraded = try makeEngine()
+        _ = try await upgraded.refreshForBrowsing("channel-1")
+        counts = await backend.counts()
+        XCTAssertEqual(counts.0, [1, 1, 1])
+    }
+    func testFailedAutomaticRefreshKeepsCacheAndBacksOffUntilNextOpen() async throws {
+        let backend = TestBackend()
+        let clock = BrowseClock()
+        let engine = try ProviderEngine(directory: directory.appendingPathComponent("state"), backend: backend, now: { clock.now }) {
+            FinderConfiguration(accountID: 1, channels: [DemoProviderBackend.channel])
+        }
+        let original = try await engine.list("channel-1")
+        clock.advance(16)
+        await backend.setListingFailure(true)
+        do { _ = try await engine.refreshForBrowsing("channel-1"); XCTFail("Expected offline error") }
+        catch is URLError {}
+        _ = try await engine.refreshForBrowsing("channel-1")
+        let cached = try await engine.list("channel-1")
+        XCTAssertEqual(cached, original)
+        var counts = await backend.counts()
+        XCTAssertEqual(counts.0, [1, 1])
+        await backend.setListingFailure(false)
+        clock.advance(16)
+        _ = try await engine.refreshForBrowsing("channel-1")
+        counts = await backend.counts()
+        XCTAssertEqual(counts.0, [1, 1, 1])
+    }
+    func testSimultaneousFolderOpenRequestsShareOneRefresh() async throws {
+        let backend = TestBackend()
+        let clock = BrowseClock()
+        let engine = try ProviderEngine(directory: directory.appendingPathComponent("state"), backend: backend, now: { clock.now }) {
+            FinderConfiguration(accountID: 1, channels: [DemoProviderBackend.channel])
+        }
+        _ = try await engine.list("channel-1")
+        clock.advance(16)
+        await backend.delayListing()
+        async let first = engine.refreshForBrowsing("channel-1")
+        async let second = engine.refreshForBrowsing("channel-1")
+        _ = try await (first, second)
+        let counts = await backend.counts()
+        XCTAssertEqual(counts.0, [1, 1])
+    }
     func testImportReplayAcrossRestartCreatesOnlyOneRemoteBlock() async throws {
         let backend = try DemoProviderBackend(directory: directory.appendingPathComponent("remote"))
         let firstEngine = try engine(backend)
@@ -342,6 +433,10 @@ final class ProviderTests: XCTestCase {
 }
 
 private actor TestBackend: ProviderBackend {
+    var listingFailure = false
+    var listingDelay: UInt64 = 0
+    func setListingFailure(_ value: Bool) { listingFailure = value }
+    func delayListing() { listingDelay = 30_000_000 }
     var listedRecord: ProviderRecord?
     func setListedRecord(_ record: ProviderRecord) { listedRecord = record }
     var pages: [Int] = []
@@ -356,6 +451,8 @@ private actor TestBackend: ProviderBackend {
     func counts() -> ([Int], Int) { (pages, downloads) }
     func list(channel: FinderChannel, page: Int, parent: String) async throws -> ProviderPage {
         pages.append(page)
+        if listingDelay > 0 { try await Task.sleep(nanoseconds: listingDelay) }
+        if listingFailure { throw URLError(.notConnectedToInternet) }
         if let listedRecord { return ProviderPage(records: [listedRecord], nextPage: nil) }
         if empty { return ProviderPage(records: [], nextPage: nil) }
         if flattened {
@@ -409,4 +506,11 @@ private actor GraphBackend: ProviderBackend {
     func record(blockID: Int, channelID: Int, parent: String) async throws -> ProviderRecord {
         ProviderRecord(id: "block-\(channelID)-\(blockID)", parent: parent, filename: "input.txt", typeIdentifier: "public.plain-text", channelID: channelID, blockID: blockID)
     }
+}
+
+private final class BrowseClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = Date(timeIntervalSince1970: 1_800_000_000)
+    var now: Date { lock.lock(); defer { lock.unlock() }; return value }
+    func advance(_ seconds: TimeInterval) { lock.lock(); defer { lock.unlock() }; value.addTimeInterval(seconds) }
 }

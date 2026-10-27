@@ -97,7 +97,8 @@ public final class ArenaFileProviderExtension: NSObject, NSFileProviderReplicate
     }
     public func enumerator(for identifier: NSFileProviderItemIdentifier, request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
         if identifier == .trashContainer { throw CocoaError(.featureUnsupported) }
-        return ProviderEnumerator(parent: FileProviderItem.key(identifier), engine: try engine.get())
+        return ProviderEnumerator(parent: FileProviderItem.key(identifier), engine: try engine.get(),
+                                  manager: manager)
     }
     public func fetchThumbnails(for identifiers: [NSFileProviderItemIdentifier], requestedSize: CGSize,
                                 perThumbnailCompletionHandler: @escaping (NSFileProviderItemIdentifier, Data?, Error?) -> Void,
@@ -118,7 +119,25 @@ public final class ArenaFileProviderExtension: NSObject, NSFileProviderReplicate
 final class ProviderEnumerator: NSObject, NSFileProviderEnumerator {
     private let parent: String
     private let engine: ProviderEngine
-    init(parent: String, engine: ProviderEngine) { self.parent = parent; self.engine = engine }
+    init(parent: String, engine: ProviderEngine, manager: NSFileProviderManager?) {
+        self.parent = parent; self.engine = engine
+        super.init()
+        if parent != "root" && parent != "working" {
+            // Finder requests can arrive through system helpers without the file-viewer flag.
+            // A cached directory may only get a subscription/currentSyncAnchor,
+            // without enumerateItems. Refresh at subscription time as well.
+            Task {
+                do {
+                    let changed = try await engine.refreshForBrowsing(parent)
+                    if changed {
+                        try await manager?.signalEnumerator(for: FileProviderItem.identifier(parent))
+                        try await manager?.signalEnumerator(for: .workingSet)
+                    }
+                } catch { /* Preserve the last listing; a later open or manual refresh retries. */ }
+            }
+        }
+    }
+    // Finish an in-flight refresh and publish its changes even if Finder navigates away.
     func invalidate() {}
     func enumerateItems(for observer: NSFileProviderEnumerationObserver, startingAt page: NSFileProviderPage) {
         Task {

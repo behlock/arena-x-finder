@@ -31,6 +31,7 @@ public struct ImportResolution: Codable {
 }
 
 public actor ProviderEngine {
+    public static let browseFreshnessInterval: TimeInterval = 15
     struct Snapshot: Codable {
         var records: [String: ProviderRecord] = [:]
         var loadedPages: [String: [String]] = [:]
@@ -38,6 +39,7 @@ public actor ProviderEngine {
         var generation: Int = -1
         var listingPageSize: Int?
         var nestedChannelFolders: Bool?
+        var pageFetchedAt: [String: Date]?
         var imports: [String: ImportAttempt] = [:]
         var revision: Int = 0
         var changes: [Change] = []
@@ -48,9 +50,12 @@ public actor ProviderEngine {
     private let directory: URL
     private let configuration: () throws -> FinderConfiguration
     private let websiteThumbnails: WebsiteThumbnailStore?
+    private let now: () -> Date
+    private var browseRetryAfter: [String: Date] = [:]
     private var runningImports: Set<String> = []
     private var pageTasks: [String: Task<[ProviderRecord], Error>] = [:]
-    public init(directory: URL, backend: any ProviderBackend, websiteThumbnails: WebsiteThumbnailStore? = nil, configuration: @escaping () throws -> FinderConfiguration) throws {
+    public init(directory: URL, backend: any ProviderBackend, websiteThumbnails: WebsiteThumbnailStore? = nil, now: @escaping () -> Date = Date.init, configuration: @escaping () throws -> FinderConfiguration) throws {
+        self.now = now
         self.websiteThumbnails = websiteThumbnails
         self.directory = directory; self.backend = backend; self.configuration = configuration
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -82,6 +87,8 @@ public actor ProviderEngine {
         snapshot.records.removeValue(forKey: id)
         snapshot.loadedPages.removeValue(forKey: id)
         snapshot.pageGenerations.removeValue(forKey: id)
+        snapshot.pageFetchedAt?.removeValue(forKey: id)
+        browseRetryAfter.removeValue(forKey: id)
         snapshot.revision += 1
         snapshot.changes.append(Change(revision: snapshot.revision, id: id, deleted: true, parent: record.parent))
     }
@@ -113,28 +120,50 @@ public actor ProviderEngine {
         guard let item = snapshot.records[id] else { throw ProviderFailure.missing }
         return item
     }
-    public func list(_ parent: String) async throws -> [ProviderRecord] {
+    public func list(_ parent: String, refreshIfStale: Bool = false) async throws -> [ProviderRecord] {
         let config = try loadConfiguration()
         if parent == "root" { return config.channels.map(ProviderRecord.channel) }
         if parent == "working" { return Array(snapshot.records.values) }
         guard let folder = snapshot.records[parent], folder.isFolder, let channelID = folder.channelID,
               let channel = folder.nestedChannel ?? config.channels.first(where: { $0.id == channelID }), let page = folder.page else { throw ProviderFailure.missing }
-        if snapshot.pageGenerations[parent] == config.refreshGeneration, let ids = snapshot.loadedPages[parent] { return ids.compactMap { snapshot.records[$0] } }
+        if snapshot.pageGenerations[parent] == config.refreshGeneration, let ids = snapshot.loadedPages[parent] {
+            let age = snapshot.pageFetchedAt?[parent].map { now().timeIntervalSince($0) }
+            let fresh = age.map { $0 >= 0 && $0 < Self.browseFreshnessInterval } ?? false
+            let backingOff = browseRetryAfter[parent].map { $0 > now() } ?? false
+            if !refreshIfStale || fresh || backingOff { return ids.compactMap { snapshot.records[$0] } }
+        }
         if let task = pageTasks[parent] { return try await task.value }
-        let backend = backend
         let task = Task { () throws -> [ProviderRecord] in
-            let result = try await backend.list(channel: channel, page: page, parent: parent)
-            var records = try result.records.map { try self.place($0, in: folder) }
-            if let next = result.nextPage, next > page {
-                records.append(.more(channelID: channelID, page: next, parent: parent, writable: channel.writable,
-                                     channel: folder.nestedChannel, namespace: folder.namespace))
+            do {
+                return try await self.fetchPage(in: folder, channel: channel, page: page, generation: config.refreshGeneration)
+            } catch {
+                // Repeated Finder callbacks must not hammer a failing endpoint.
+                let delay = max(Self.browseFreshnessInterval, TimeInterval((error as? APIError)?.retryAfter ?? 0))
+                self.browseRetryAfter[parent] = self.now().addingTimeInterval(delay)
+                throw error
             }
-            return records
         }
         pageTasks[parent] = task
         defer { pageTasks[parent] = nil }
-        let records = try await task.value
-        guard snapshot.records[parent]?.channelID == channelID else { throw ProviderFailure.missing }
+        return try await task.value
+    }
+    /// Called for a Finder directory subscription, never for background working-set scans.
+    public func refreshForBrowsing(_ parent: String) async throws -> Bool {
+        _ = try loadConfiguration()
+        guard let folder = snapshot.records[parent], folder.isFolder else { return false }
+        let previous = snapshot.revision
+        _ = try await list(parent, refreshIfStale: true)
+        return snapshot.revision != previous
+    }
+    private func fetchPage(in folder: ProviderRecord, channel: FinderChannel, page: Int, generation: Int) async throws -> [ProviderRecord] {
+        let parent = folder.id
+        let result = try await backend.list(channel: channel, page: page, parent: parent)
+        var records = try result.records.map { try place($0, in: folder) }
+        if let next = result.nextPage, next > page {
+            records.append(.more(channelID: channel.id, page: next, parent: parent, writable: channel.writable,
+                                 channel: folder.nestedChannel, namespace: folder.namespace))
+        }
+        guard snapshot.records[parent]?.channelID == channel.id else { throw ProviderFailure.missing }
         // One explicit folder contains one API page. Finder otherwise eagerly
         // follows every continuation page, even when its window is not scrolling.
         let fresh = Set(records.map(\.id))
@@ -145,7 +174,10 @@ public actor ProviderEngine {
             forgetTree(id)
         }
         snapshot.loadedPages[parent] = records.map(\.id)
-        snapshot.pageGenerations[parent] = config.refreshGeneration
+        snapshot.pageGenerations[parent] = generation
+        if snapshot.pageFetchedAt == nil { snapshot.pageFetchedAt = [:] }
+        snapshot.pageFetchedAt?[parent] = now()
+        browseRetryAfter.removeValue(forKey: parent)
         updateWebsiteThumbnails()
         try persist()
         return records.compactMap { snapshot.records[$0.id] }

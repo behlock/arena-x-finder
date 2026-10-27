@@ -164,11 +164,109 @@ final class ProviderTests: XCTestCase {
         XCTAssertTrue(record.filename.hasSuffix("[123].png"))
         XCTAssertEqual(record.id, "block-1-123")
     }
-    func testNestedChannelsBecomeLinksInsteadOfRecursiveFolders() throws {
+    func testNestedChannelsBecomeFoldersWithTheirOwnPermissions() throws {
         let block = try JSONDecoder().decode(RemoteBlock.self, from: Data(#"{"id":99,"type":"Channel","title":"Nested","slug":"nested"}"#.utf8))
         let record = try ProviderRecord.block(block, channelID: 1, parent: "channel-1")
-        XCTAssertFalse(record.isFolder)
-        XCTAssertTrue(record.filename.hasSuffix(".webloc"))
+        XCTAssertTrue(record.isFolder)
+        XCTAssertEqual(record.channelID, 99)
+        XCTAssertEqual(record.nestedChannel?.slug, "nested")
+        XCTAssertFalse(record.writable)
+        XCTAssertNil(record.websiteURL)
+        XCTAssertEqual(record.filename, "Nested [99]")
+    }
+    func testNestedBrowsingIsLazyScopesRepeatedChannelsAndStopsCycles() async throws {
+        let backend = GraphBackend()
+        let engine = try engine(backend)
+        let top = try await engine.list("channel-1")
+        let requested1 = await backend.requestedChannels()
+        XCTAssertEqual(requested1, [1])
+        let second = try XCTUnwrap(top.first { $0.channelID == 2 })
+        let directThird = try XCTUnwrap(top.first { $0.channelID == 3 })
+        XCTAssertTrue(second.writable)
+        XCTAssertFalse(directThird.writable)
+        let children = try await engine.list(second.id)
+        let cycle = try XCTUnwrap(children.first { $0.channelID == 1 })
+        XCTAssertFalse(cycle.isFolder)
+        XCTAssertNotNil(cycle.websiteURL)
+        let nestedThird = try XCTUnwrap(children.first { $0.isFolder && $0.channelID == 3 })
+        XCTAssertNotEqual(nestedThird.id, directThird.id)
+        let a = try await engine.list(directThird.id)
+        let b = try await engine.list(nestedThird.id)
+        XCTAssertTrue(Set(a.map(\.id)).isDisjoint(with: Set(b.map(\.id))))
+        XCTAssertTrue(a.allSatisfy { $0.parent == directThird.id })
+        XCTAssertTrue(b.allSatisfy { $0.parent == nestedThird.id })
+        let pageA = try XCTUnwrap(a.first { $0.isFolder })
+        let pageB = try XCTUnwrap(b.first { $0.isFolder })
+        let nextA = try await engine.list(pageA.id)
+        let nextB = try await engine.list(pageB.id)
+        XCTAssertNotEqual(nextA[0].id, nextB[0].id)
+        XCTAssertEqual(nextA[0].parent, pageA.id)
+        let downloads1 = await backend.downloadCount()
+        XCTAssertEqual(downloads1, 0)
+    }
+    func testRemovingNestedOccurrencePreservesAnotherOccurrenceAndRefreshesParentsFirst() async throws {
+        let backend = GraphBackend()
+        let configURL = directory.appendingPathComponent("config.json")
+        var config = FinderConfiguration(accountID: 1, channels: [DemoProviderBackend.channel])
+        try JSONEncoder().encode(config).write(to: configURL)
+        let engine = try ProviderEngine(directory: directory.appendingPathComponent("state"), backend: backend) {
+            try JSONDecoder().decode(FinderConfiguration.self, from: Data(contentsOf: configURL))
+        }
+        let top = try await engine.list("channel-1")
+        let second = try XCTUnwrap(top.first { $0.channelID == 2 })
+        let directThird = try XCTUnwrap(top.first { $0.channelID == 3 })
+        let children = try await engine.list(second.id)
+        let nestedThird = try XCTUnwrap(children.first { $0.isFolder && $0.channelID == 3 })
+        let removed = try await engine.list(nestedThird.id)
+        let retained = try await engine.list(directThird.id)
+        let anchor = await engine.revision()
+        await backend.removeSecond()
+        config.refreshGeneration += 1
+        try JSONEncoder().encode(config).write(to: configURL)
+        try await engine.refreshLoadedPages()
+        let changes = try await engine.changes(after: anchor)
+        XCTAssertTrue(changes.deleted.contains(second.id))
+        XCTAssertTrue(removed.allSatisfy { changes.deleted.contains($0.id) })
+        XCTAssertTrue(retained.allSatisfy { !changes.deleted.contains($0.id) })
+        let requested2 = await backend.requestedChannels()
+        XCTAssertEqual(requested2, [1, 2, 3, 3, 1, 3])
+    }
+    func testNestedUploadUsesChildChannelAndStableOccurrenceID() async throws {
+        let backend = GraphBackend()
+        let engine = try engine(backend)
+        let top = try await engine.list("channel-1")
+        let writable = try XCTUnwrap(top.first { $0.channelID == 2 })
+        let readOnly = try XCTUnwrap(top.first { $0.channelID == 3 })
+        let input = directory.appendingPathComponent("input.txt")
+        try Data("test".utf8).write(to: input)
+        let record = try await engine.importFile(requestID: "nested-upload", parent: writable.id, filename: "input.txt", file: input)
+        XCTAssertEqual(record.channelID, 2)
+        XCTAssertEqual(record.parent, writable.id)
+        XCTAssertEqual(record.id, ProviderRecord.scopedID("block-2-101", namespace: writable.namespace))
+        do {
+            _ = try await engine.importFile(requestID: "read-only", parent: readOnly.id, filename: "input.txt", file: input)
+            XCTFail("A parent channel's write permission must not grant access to a nested channel")
+        } catch ProviderFailure.readOnly {}
+        let created1 = await backend.createdChannels()
+        XCTAssertEqual(created1, [2])
+    }
+    func testUpgradeReplacesLegacyChannelShortcutWithFolder() async throws {
+        let state = directory.appendingPathComponent("state")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        let shortcut = ProviderRecord(id: "block-1-2", parent: "channel-1", filename: "Channel 2 [2].webloc", typeIdentifier: "com.apple.web-internet-location", channelID: 1, blockID: 2)
+        var snapshot = ProviderEngine.Snapshot()
+        snapshot.records = ["channel-1": .channel(DemoProviderBackend.channel), shortcut.id: shortcut]
+        snapshot.loadedPages = ["channel-1": [shortcut.id]]
+        snapshot.pageGenerations = ["channel-1": 0]
+        snapshot.generation = 0
+        snapshot.listingPageSize = ArenaClient.channelContentsPageSize
+        try JSONEncoder().encode(snapshot).write(to: state.appendingPathComponent("provider-state.json"))
+        let engine = try engine(GraphBackend())
+        let records = try await engine.list("channel-1")
+        XCTAssertTrue(records.allSatisfy(\.isFolder))
+        XCTAssertTrue(records.contains { $0.channelID == 2 && $0.id != shortcut.id })
+        let changes = try await engine.changes(after: 0)
+        XCTAssertTrue(changes.deleted.contains(shortcut.id))
     }
     func testWebsitePreviewQueueDeduplicatesAndPublishesVersionedImages() throws {
         let store = WebsiteThumbnailStore(directory: directory.appendingPathComponent("websites"))
@@ -277,5 +375,38 @@ private actor TestBackend: ProviderBackend {
     }
     func record(blockID: Int, channelID: Int, parent: String) async throws -> ProviderRecord {
         ProviderRecord(id: "block-1-\(blockID)", parent: parent, filename: "New.txt", typeIdentifier: "public.plain-text", channelID: 1, blockID: blockID)
+    }
+}
+
+private actor GraphBackend: ProviderBackend {
+    var requests: [Int] = []
+    var downloads = 0
+    var creates: [Int] = []
+    var omitSecond = false
+    func requestedChannels() -> [Int] { requests }
+    func downloadCount() -> Int { downloads }
+    func createdChannels() -> [Int] { creates }
+    func removeSecond() { omitSecond = true }
+    func list(channel: FinderChannel, page: Int, parent: String) async throws -> ProviderPage {
+        requests.append(channel.id)
+        let children = channel.id == 1 ? (omitSecond ? [3] : [2, 3]) : (channel.id == 2 ? [1, 3] : [])
+        let records: [ProviderRecord]
+        if children.isEmpty {
+            records = [ProviderRecord(id: "block-\(channel.id)-\(page == 1 ? 99 : 100)", parent: parent, filename: "Example.txt", typeIdentifier: "public.plain-text", channelID: channel.id, blockID: page == 1 ? 99 : 100)]
+        } else {
+            records = try children.map { id in
+                let bytes = try JSONSerialization.data(withJSONObject: ["id": id, "type": "Channel", "title": "Channel \(id)", "slug": "channel-\(id)", "can": ["add_to": id == 2]])
+                let block = try JSONDecoder().decode(RemoteBlock.self, from: bytes)
+                return try ProviderRecord.block(block, channelID: channel.id, parent: parent)
+            }
+        }
+        return ProviderPage(records: records, nextPage: channel.id == 3 && page == 1 ? 2 : nil)
+    }
+    func contents(_ record: ProviderRecord) async throws -> Data { downloads += 1; return Data() }
+    func thumbnail(_ record: ProviderRecord) async throws -> Data? { nil }
+    func upload(_ file: URL, filename: String) async throws -> URL { URL(string: "https://example.com/file")! }
+    func create(source: URL, filename: String, channelID: Int) async throws -> Int { creates.append(channelID); return 101 }
+    func record(blockID: Int, channelID: Int, parent: String) async throws -> ProviderRecord {
+        ProviderRecord(id: "block-\(channelID)-\(blockID)", parent: parent, filename: "input.txt", typeIdentifier: "public.plain-text", channelID: channelID, blockID: blockID)
     }
 }

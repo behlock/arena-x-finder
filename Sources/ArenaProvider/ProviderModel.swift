@@ -58,6 +58,9 @@ public struct ProviderRecord: Codable, Equatable, Sendable {
     public var version: String = "1"
     public var websiteThumbnailRevision: String?
     public var websiteThumbnailDate: Date?
+    public var nestedChannel: FinderChannel?
+    // Identifies a channel occurrence independently of its pagination folders.
+    public var namespace: String?
     public var websiteURL: URL? {
         guard typeIdentifier == "com.apple.web-internet-location", let inlineData,
               let value = try? PropertyListSerialization.propertyList(from: inlineData, format: nil) as? [String: String],
@@ -75,9 +78,16 @@ public struct ProviderRecord: Codable, Equatable, Sendable {
         ProviderRecord(id: "channel-\(channel.id)", parent: "root", filename: cleanName(channel.title) + " [\(channel.id)]",
                        typeIdentifier: UTType.folder.identifier, channelID: channel.id, page: 1, writable: channel.writable)
     }
-    public static func more(channelID: Int, page: Int, parent: String, writable: Bool) -> ProviderRecord {
-        ProviderRecord(id: "page-\(channelID)-\(page)", parent: parent, filename: "More items (page \(page))",
+    public static func more(channelID: Int, page: Int, parent: String, writable: Bool, channel: FinderChannel? = nil, namespace: String? = nil) -> ProviderRecord {
+        var record = ProviderRecord(id: scopedID("page-\(channelID)-\(page)", namespace: namespace), parent: parent, filename: "More items (page \(page))",
                        typeIdentifier: UTType.folder.identifier, channelID: channelID, page: page, writable: writable)
+        record.nestedChannel = channel
+        record.namespace = namespace
+        return record
+    }
+    public static func scopedID(_ id: String, namespace: String?) -> String {
+        guard let namespace else { return id }
+        return "occurrence-" + SHA256.hash(data: Data((namespace + "\n" + id).utf8)).map { String(format: "%02x", $0) }.joined()
     }
     public static func block(_ block: RemoteBlock, channelID: Int, parent: String) throws -> ProviderRecord {
         let title = cleanName(block.title ?? "Untitled")
@@ -85,7 +95,15 @@ public struct ProviderRecord: Codable, Equatable, Sendable {
                                     typeIdentifier: UTType.data.identifier, channelID: channelID, blockID: block.id,
                                     version: block.updated_at ?? "1")
         let kind = block.type.lowercased()
-        if kind == "image", let image = block.image, let source = image.src {
+        if kind == "channel" {
+            record.id = "nested-\(channelID)-\(block.id)"
+            record.typeIdentifier = UTType.folder.identifier
+            record.filename = title + " [\(block.id)]"
+            record.channelID = block.id
+            record.page = 1
+            record.writable = block.can?.add_to == true
+            record.nestedChannel = FinderChannel(id: block.id, title: block.title ?? "Untitled", slug: block.slug ?? String(block.id), writable: record.writable)
+        } else if kind == "image", let image = block.image, let source = image.src {
             record.source = source; record.thumbnail = image.small?.src; record.size = image.file_size
             record.typeIdentifier = image.content_type.flatMap { UTType(mimeType: $0)?.identifier } ?? UTType.image.identifier
             record.filename = fileName(title, id: block.id, ext: image.filename.map { ($0 as NSString).pathExtension } ?? source.pathExtension, fallback: "jpg")

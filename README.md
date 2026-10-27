@@ -40,15 +40,15 @@ If channel discovery is unavailable for your account, you can still add a channe
 3. Click **Show channel in Finder**.
 4. Click **Enable** in Finder if macOS asks you to enable the provider.
 
-Only channels you explicitly add appear under **Are.na x Finder** in Finder’s Locations. This is a native File Provider domain, not a generated local folder mirror.
+Channels you explicitly add appear at the top level under **Are.na x Finder** in Finder’s Locations. Connected channels appear as folders inside them. This is a native File Provider domain, not a generated local folder mirror.
 
-- **Browse:** images and attachments appear as files; text blocks become Markdown files; links, embeds, and nested channels become `.webloc` shortcuts.
+- **Browse:** images and attachments appear as files; text blocks become Markdown files; links and embeds become `.webloc` shortcuts. Connected channels become folders whose contents load when opened. They retain their own Are.na permissions; write access to a parent does not grant write access to its connected channels.
 - **Preview:** thumbnails use small image versions; Quick Look and opening/copying a file fetch its full contents when needed. Downloaded files may be evicted by macOS.
 - **Website previews:** `.webloc` items use Are.na's small preview image when available, otherwise the capture and rendering code from Webloc Thumbnails generates a screenshot automatically. A background helper handles loaded channel items, caches successful screenshots for seven days, and backs off failed captures for a day. Sites requiring sign-in or blocking capture may retain a generic icon. The renderer uses an isolated browser session and never receives the Are.na token.
 - **Upload:** drop regular files up to **100 MB** into a writable channel folder. Finder manages the local pending copy and invokes the extension. The native import path preserves the original bytes; it does not use the picker’s image resizing.
 - **Refresh:** use **Refresh Finder** in the app to request fresh listings. This prototype does not continuously poll or use server push notifications.
 - **Long channels:** each folder shows up to **100 items**, plus a **More items (page N)** folder when another batch exists. Open that folder to fetch the next batch of up to 100. Channels with 100 or fewer items fit in one folder. Finder eagerly requests every native continuation page, so explicit page folders prevent a normal folder visit from fetching the whole channel.
-- **Names:** channel and block IDs are appended to names to distinguish duplicate titles. Nested channel shortcuts avoid recursive channel graphs.
+- **Names:** channel and block IDs are appended to names to distinguish duplicate titles. The same channel can appear in multiple branches independently. A connection back to an ancestor stays a `.webloc` shortcut to prevent an endless folder chain.
 - **Scope:** remote rename, move, delete, folder creation, and edits to existing files are unavailable. Existing remote files appear read-only. Dropping new files is supported.
 
 The extension remembers created block IDs before completing an import, so a replay from macOS does not create another block. If the result of a creation request is unknown, it stops and reports an error. Use **Review Finder uploads…** to link the block that was created, or explicitly allow a retry after checking the channel. Files still processing on Are.na can be retried without re-uploading.
@@ -129,7 +129,7 @@ Remove the demo location afterwards, preserving any unsynced files:
 "$HOME/Applications/Are.na x Finder.app/Contents/MacOS/Are.na x Finder" --finder-remove-demo
 ```
 
-Validated on the development Mac: native domain registration, private-channel listing, thumbnails, one image opened through Quick Look, local demo import completion, and shared Keychain access. Automatic website previews were also verified visually in Finder: 29 of 31 loaded website shortcuts received screenshots; two captures failed and retained generic icons. Captures can show a site's cookie banner, sign-in page, or loading placeholders. A live write into Are.na has not been exercised by these tests.
+Validated on the development Mac: native domain registration, private-channel listing, thumbnails, one image opened through Quick Look, local demo import completion, and shared Keychain access. Automatic website previews were also verified visually in Finder: 29 of 31 loaded website shortcuts received screenshots before nested channels became folders; two captures failed and retained generic icons. Captures can show a site's cookie banner, sign-in page, or loading placeholders. The nested-folder upgrade converted 19 connections in Hardware, and opening Hello Robots loaded 100 items plus a continuation folder with one additional metadata request. A live write into Are.na has not been exercised by these tests.
 
 ## Troubleshooting
 

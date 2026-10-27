@@ -37,6 +37,7 @@ public actor ProviderEngine {
         var pageGenerations: [String: Int] = [:]
         var generation: Int = -1
         var listingPageSize: Int?
+        var nestedChannelFolders: Bool?
         var imports: [String: ImportAttempt] = [:]
         var revision: Int = 0
         var changes: [Change] = []
@@ -55,10 +56,11 @@ public actor ProviderEngine {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let url = directory.appendingPathComponent("provider-state.json")
         snapshot = FileManager.default.fileExists(atPath: url.path) ? try JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: url)) : Snapshot()
-        if snapshot.listingPageSize != ArenaClient.channelContentsPageSize {
+        if snapshot.listingPageSize != ArenaClient.channelContentsPageSize || snapshot.nestedChannelFolders != true {
             // Keep records and upload recovery intact until a fresh listing arrives.
             snapshot.pageGenerations.removeAll()
             snapshot.listingPageSize = ArenaClient.channelContentsPageSize
+            snapshot.nestedChannelFolders = true
             try persist()
         }
     }
@@ -116,21 +118,23 @@ public actor ProviderEngine {
         if parent == "root" { return config.channels.map(ProviderRecord.channel) }
         if parent == "working" { return Array(snapshot.records.values) }
         guard let folder = snapshot.records[parent], folder.isFolder, let channelID = folder.channelID,
-              let channel = config.channels.first(where: { $0.id == channelID }), let page = folder.page else { throw ProviderFailure.missing }
+              let channel = folder.nestedChannel ?? config.channels.first(where: { $0.id == channelID }), let page = folder.page else { throw ProviderFailure.missing }
         if snapshot.pageGenerations[parent] == config.refreshGeneration, let ids = snapshot.loadedPages[parent] { return ids.compactMap { snapshot.records[$0] } }
         if let task = pageTasks[parent] { return try await task.value }
         let backend = backend
         let task = Task { () throws -> [ProviderRecord] in
             let result = try await backend.list(channel: channel, page: page, parent: parent)
-            var records = result.records
+            var records = try result.records.map { try self.place($0, in: folder) }
             if let next = result.nextPage, next > page {
-                records.append(.more(channelID: channelID, page: next, parent: parent, writable: channel.writable))
+                records.append(.more(channelID: channelID, page: next, parent: parent, writable: channel.writable,
+                                     channel: folder.nestedChannel, namespace: folder.namespace))
             }
             return records
         }
         pageTasks[parent] = task
         defer { pageTasks[parent] = nil }
         let records = try await task.value
+        guard snapshot.records[parent]?.channelID == channelID else { throw ProviderFailure.missing }
         // One explicit folder contains one API page. Finder otherwise eagerly
         // follows every continuation page, even when its window is not scrolling.
         let fresh = Set(records.map(\.id))
@@ -145,6 +149,37 @@ public actor ProviderEngine {
         updateWebsiteThumbnails()
         try persist()
         return records.compactMap { snapshot.records[$0.id] }
+    }
+    private func ancestors(of folder: ProviderRecord) -> [ProviderRecord] {
+        var result = [folder]
+        var seen: Set<String> = [folder.id]
+        var parent = folder.parent
+        while let record = snapshot.records[parent], seen.insert(parent).inserted {
+            result.append(record)
+            parent = record.parent
+        }
+        return result
+    }
+    private func place(_ original: ProviderRecord, in folder: ProviderRecord) throws -> ProviderRecord {
+        var record = original
+        record.parent = folder.id
+        if let channel = record.nestedChannel {
+            if ancestors(of: folder).contains(where: { $0.channelID == channel.id }) {
+                // Are.na is a graph. Stop only ancestor cycles, not repeated
+                // channels reached through independent paths.
+                record.id = "cycle-\(folder.channelID ?? 0)-\(channel.id)"
+                record.typeIdentifier = "com.apple.web-internet-location"
+                record.filename += ".webloc"
+                record.inlineData = try PropertyListSerialization.data(fromPropertyList: ["URL": "https://www.are.na/channel/\(channel.slug)"], format: .xml, options: 0)
+                record.size = Int64(record.inlineData!.count)
+                record.nestedChannel = nil
+                record.page = nil
+                record.writable = false
+            }
+        }
+        record.id = ProviderRecord.scopedID(record.id, namespace: folder.namespace)
+        if record.isFolder, record.nestedChannel != nil { record.namespace = record.id }
+        return record
     }
     public func contents(_ id: String) async throws -> (ProviderRecord, Data) {
         let record = try item(id)
@@ -176,7 +211,8 @@ public actor ProviderEngine {
         // revisit pages the user previously opened, and only list()'s stale pages
         // issue requests. Visit parents first in case they remove old page folders.
         let parents = snapshot.loadedPages.keys.sorted {
-            (snapshot.records[$0]?.page ?? 0) < (snapshot.records[$1]?.page ?? 0)
+            (snapshot.records[$0].map { ancestors(of: $0).count } ?? 0) <
+            (snapshot.records[$1].map { ancestors(of: $0).count } ?? 0)
         }
         for parent in parents where snapshot.records[parent]?.isFolder == true {
             _ = try await list(parent)
@@ -231,7 +267,8 @@ public actor ProviderEngine {
                 try await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
-        guard let record = processed else { throw ProviderFailure.processing }
+        guard let processed else { throw ProviderFailure.processing }
+        let record = try place(processed, in: folder)
         attempt.record = record; snapshot.imports[requestID] = attempt
         remember(record)
         if snapshot.loadedPages[parent] != nil, !snapshot.loadedPages[parent]!.contains(record.id) { snapshot.loadedPages[parent]!.append(record.id) }

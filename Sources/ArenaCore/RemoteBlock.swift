@@ -16,6 +16,8 @@ public struct RemoteBlock: Codable, Sendable {
     public let attachment: Attachment?
     public let content: Text?
     public let source: Source?
+    public let can: Abilities?
+    public struct Abilities: Codable, Sendable { public let add_to: Bool? }
     public struct Image: Codable, Sendable {
         public let src: URL?
         public let filename: String?

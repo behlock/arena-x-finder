@@ -46,9 +46,11 @@ public actor ProviderEngine {
     private let backend: any ProviderBackend
     private let directory: URL
     private let configuration: () throws -> FinderConfiguration
+    private let websiteThumbnails: WebsiteThumbnailStore?
     private var runningImports: Set<String> = []
     private var pageTasks: [String: Task<[ProviderRecord], Error>] = [:]
-    public init(directory: URL, backend: any ProviderBackend, configuration: @escaping () throws -> FinderConfiguration) throws {
+    public init(directory: URL, backend: any ProviderBackend, websiteThumbnails: WebsiteThumbnailStore? = nil, configuration: @escaping () throws -> FinderConfiguration) throws {
+        self.websiteThumbnails = websiteThumbnails
         self.directory = directory; self.backend = backend; self.configuration = configuration
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let url = directory.appendingPathComponent("provider-state.json")
@@ -87,8 +89,21 @@ public actor ProviderEngine {
             snapshot.generation = config.refreshGeneration
         }
         for channel in config.channels { remember(.channel(channel)) }
+        updateWebsiteThumbnails()
         try persist()
         return config
+    }
+    private func updateWebsiteThumbnails() {
+        guard let websiteThumbnails else { return }
+        for var record in Array(snapshot.records.values) {
+            guard let url = record.websiteURL else { continue }
+            if record.thumbnail == nil { try? websiteThumbnails.enqueue(url) }
+            if let result = websiteThumbnails.result(for: url), let revision = result.revision {
+                record.websiteThumbnailRevision = revision
+                record.websiteThumbnailDate = result.completedAt
+                remember(record)
+            }
+        }
     }
     public func item(_ id: String) throws -> ProviderRecord {
         _ = try loadConfiguration()
@@ -127,8 +142,9 @@ public actor ProviderEngine {
         }
         snapshot.loadedPages[parent] = records.map(\.id)
         snapshot.pageGenerations[parent] = config.refreshGeneration
+        updateWebsiteThumbnails()
         try persist()
-        return records
+        return records.compactMap { snapshot.records[$0.id] }
     }
     public func contents(_ id: String) async throws -> (ProviderRecord, Data) {
         let record = try item(id)
@@ -137,9 +153,20 @@ public actor ProviderEngine {
     }
     public func thumbnail(_ id: String) async throws -> Data? {
         let record = try item(id)
+        if let url = record.websiteURL, let data = websiteThumbnails?.image(for: url) { return data }
         let cache = directory.appendingPathComponent("thumbnail-" + record.fingerprint)
         if let data = try? Data(contentsOf: cache) { return data }
-        guard let data = try await backend.thumbnail(record) else { return nil }
+        let data: Data?
+        do { data = try await backend.thumbnail(record) }
+        catch {
+            guard let url = record.websiteURL, let websiteThumbnails else { throw error }
+            try websiteThumbnails.enqueue(url)
+            return nil
+        }
+        guard let data else {
+            if let url = record.websiteURL { try websiteThumbnails?.enqueue(url) }
+            return nil
+        }
         try data.write(to: cache, options: .atomic)
         return data
     }

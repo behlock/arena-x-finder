@@ -170,9 +170,82 @@ final class ProviderTests: XCTestCase {
         XCTAssertFalse(record.isFolder)
         XCTAssertTrue(record.filename.hasSuffix(".webloc"))
     }
+    func testWebsitePreviewQueueDeduplicatesAndPublishesVersionedImages() throws {
+        let store = WebsiteThumbnailStore(directory: directory.appendingPathComponent("websites"))
+        let url = URL(string: "https://example.com/reference")!
+        try store.enqueue(url)
+        try store.enqueue(url)
+        XCTAssertEqual(try store.pending().count, 1)
+        let bytes = Data([1, 2, 3])
+        try store.complete(url, png: bytes)
+        XCTAssertEqual(store.image(for: url), bytes)
+        XCTAssertNotNil(store.result(for: url)?.revision)
+        XCTAssertTrue(try store.pending().isEmpty)
+        try store.enqueue(url)
+        XCTAssertTrue(try store.pending().isEmpty)
+        try store.enqueue(url, now: Date().addingTimeInterval(8 * 24 * 3600))
+        XCTAssertEqual(try store.pending().count, 1)
+    }
+    func testWebsitePreviewFailuresBackOffAndRejectCredentials() throws {
+        let store = WebsiteThumbnailStore(directory: directory.appendingPathComponent("websites"))
+        let url = URL(string: "https://example.com/missing")!
+        try store.enqueue(url)
+        try store.complete(url, png: nil)
+        try store.enqueue(url)
+        XCTAssertTrue(try store.pending().isEmpty)
+        XCTAssertNil(store.image(for: url))
+        for invalid in ["file:///etc/passwd", "https://user:password@example.com", "javascript:alert(1)"] {
+            try store.enqueue(URL(string: invalid)!)
+        }
+        XCTAssertTrue(try store.pending().isEmpty)
+        try store.enqueue(url, now: Date().addingTimeInterval(25 * 3600))
+        XCTAssertEqual(try store.pending().count, 1)
+    }
+    func testLinkPreviewUsesArenaImageAndGeneratedRevisionInvalidatesFinderCache() throws {
+        let block = try JSONDecoder().decode(RemoteBlock.self, from: Data(#"{"id":123,"type":"Link","title":"Reference","source":{"url":"https://example.com"},"image":{"small":{"src":"https://images.are.na/preview.jpg"}}}"#.utf8))
+        var record = try ProviderRecord.block(block, channelID: 1, parent: "channel-1")
+        XCTAssertEqual(record.websiteURL?.absoluteString, "https://example.com")
+        XCTAssertEqual(record.thumbnail?.absoluteString, "https://images.are.na/preview.jpg")
+        let originalContents = record.inlineData
+        let oldVersion = FileProviderItem(record).itemVersion.contentVersion
+        record.websiteThumbnailRevision = "generated-image-hash"
+        record.websiteThumbnailDate = Date(timeIntervalSince1970: 1234567890)
+        XCTAssertNotEqual(FileProviderItem(record).itemVersion.contentVersion, oldVersion)
+        XCTAssertEqual(FileProviderItem(record).contentModificationDate, record.websiteThumbnailDate)
+        XCTAssertEqual(record.inlineData, originalContents)
+        XCTAssertLessThanOrEqual(record.contentVersion.count, 128)
+    }
+    func testBackgroundPreviewPublishesChangeWithoutDownloadingOriginalOrRefetchingPage() async throws {
+        let block = try JSONDecoder().decode(RemoteBlock.self, from: Data(#"{"id":123,"type":"Link","title":"Reference","source":{"url":"https://example.com"}}"#.utf8))
+        let record = try ProviderRecord.block(block, channelID: 1, parent: "channel-1")
+        let backend = TestBackend()
+        await backend.setListedRecord(record)
+        let previews = WebsiteThumbnailStore(directory: directory.appendingPathComponent("websites"))
+        let engine = try ProviderEngine(directory: directory.appendingPathComponent("state"), backend: backend, websiteThumbnails: previews) {
+            FinderConfiguration(accountID: 1, channels: [DemoProviderBackend.channel])
+        }
+        let listed = try await engine.list("channel-1")
+        let anchor = await engine.revision()
+        XCTAssertEqual(try previews.pending().count, 1)
+        let url = try XCTUnwrap(record.websiteURL)
+        let image = Data([1, 2, 3])
+        try previews.complete(url, png: image)
+        let changes = try await engine.changes(after: anchor)
+        let updated = try XCTUnwrap(changes.updated.first { $0.id == record.id })
+        XCTAssertNotEqual(updated.contentVersion, listed[0].contentVersion)
+        XCTAssertEqual(FileProviderItem(updated).contentModificationDate, previews.result(for: url)?.completedAt)
+        let thumbnail = try await engine.thumbnail(record.id)
+        XCTAssertEqual(thumbnail, image)
+        let counts = await backend.counts()
+        XCTAssertEqual(counts.0, [1])
+        XCTAssertEqual(counts.1, 0)
+        XCTAssertTrue(try previews.pending().isEmpty)
+    }
 }
 
 private actor TestBackend: ProviderBackend {
+    var listedRecord: ProviderRecord?
+    func setListedRecord(_ record: ProviderRecord) { listedRecord = record }
     var pages: [Int] = []
     var downloads = 0
     var creates = 0
@@ -185,6 +258,7 @@ private actor TestBackend: ProviderBackend {
     func counts() -> ([Int], Int) { (pages, downloads) }
     func list(channel: FinderChannel, page: Int, parent: String) async throws -> ProviderPage {
         pages.append(page)
+        if let listedRecord { return ProviderPage(records: [listedRecord], nextPage: nil) }
         if empty { return ProviderPage(records: [], nextPage: nil) }
         if flattened {
             return ProviderPage(records: (1...2).map { (id: Int) in

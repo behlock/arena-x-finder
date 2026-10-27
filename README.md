@@ -10,6 +10,7 @@ Browse your channels under Finder’s **Locations**, preview files with Quick Lo
 - Xcode or the Xcode Command Line Tools, including Swift 5.9 or later.
 - An Are.na account and a personal access token with **write** access.
 - An Apple Development signing identity installed in Keychain. The build picks the first available Apple Development identity; set `ARENA_SIGNING_IDENTITY` to choose another. The Finder extension cannot use the original app’s ad hoc signature.
+- The sibling `../webloc-thumbnail-generator` project when building from source. Its `ThumbnailCapture` and `ThumbnailCore` libraries are compiled into the app; installed copies do not need the source folder at runtime.
 
 ## Install
 
@@ -43,6 +44,7 @@ Only channels you explicitly add appear under **Are.na x Finder** in Finder’s 
 
 - **Browse:** images and attachments appear as files; text blocks become Markdown files; links, embeds, and nested channels become `.webloc` shortcuts.
 - **Preview:** thumbnails use small image versions; Quick Look and opening/copying a file fetch its full contents when needed. Downloaded files may be evicted by macOS.
+- **Website previews:** `.webloc` items use Are.na's small preview image when available, otherwise the capture and rendering code from Webloc Thumbnails generates a screenshot automatically. A background helper handles loaded channel items, caches successful screenshots for seven days, and backs off failed captures for a day. Sites requiring sign-in or blocking capture may retain a generic icon. The renderer uses an isolated browser session and never receives the Are.na token.
 - **Upload:** drop regular files up to **100 MB** into a writable channel folder. Finder manages the local pending copy and invokes the extension. The native import path preserves the original bytes; it does not use the picker’s image resizing.
 - **Refresh:** use **Refresh Finder** in the app to request fresh listings. This prototype does not continuously poll or use server push notifications.
 - **Long channels:** each folder shows up to **100 items**, plus a **More items (page N)** folder when another batch exists. Open that folder to fetch the next batch of up to 100. Channels with 100 or fewer items fit in one folder. Finder eagerly requests every native continuation page, so explicit page folders prevent a normal folder visit from fetching the whole channel.
@@ -54,6 +56,14 @@ The extension remembers created block IDs before completing an import, so a repl
 API metadata/write requests are paced separately from thumbnail/file transfers. Existing loaded listings are cached until an explicit refresh. A count-only `request-counts.json` records API pages, thumbnails, file downloads, and uploads for testing. No tokens or filenames are logged there.
 
 The Finder configuration, metadata, thumbnails, and import ledger live in the signed app’s group container under `~/Library/Group Containers/<team>.com.behlock.arena-x-finder/`. Credentials stay in the login Keychain, with an explicit ACL for the signed host app and extension. The Mac-only app group is derived from your signing team during the build.
+
+The installer starts a per-user LaunchAgent, `com.behlock.arena-x-finder.thumbnails`, for the bundled thumbnail helper. It runs without the picker window, renders one page at a time with a 20-second deadline, and checks its shared queue every two seconds when idle. Finder receives preview images through the provider's thumbnail API. The provider updates the shortcut's content version and modification date when a generated image becomes ready so Finder refreshes its cached icon. The helper does not edit files under CloudStorage, and shortcuts can remain undownloaded. To stop automatic screenshot generation:
+
+```sh
+launchctl bootout "gui/$(id -u)/com.behlock.arena-x-finder.thumbnails"
+```
+
+Remove `~/Library/LaunchAgents/com.behlock.arena-x-finder.thumbnails.plist` as well to keep it disabled after login. Reinstalling the app enables it again. Existing previews and link destinations are preserved.
 
 Are.na’s API guidance prohibits systematic downloading and account-wide crawling. This prototype uses explicitly selected channels and bounded page folders; this is an implementation constraint, not a claim of endorsement or an exception to their usage policy.
 
@@ -119,7 +129,7 @@ Remove the demo location afterwards, preserving any unsynced files:
 "$HOME/Applications/Are.na x Finder.app/Contents/MacOS/Are.na x Finder" --finder-remove-demo
 ```
 
-Validated on the development Mac: native domain registration, private-channel listing, thumbnails, one image opened through Quick Look, local demo import completion, and shared Keychain access. A live write into Are.na has not been exercised by these tests.
+Validated on the development Mac: native domain registration, private-channel listing, thumbnails, one image opened through Quick Look, local demo import completion, and shared Keychain access. Automatic website previews were also verified visually in Finder: 29 of 31 loaded website shortcuts received screenshots; two captures failed and retained generic icons. Captures can show a site's cookie banner, sign-in page, or loading placeholders. A live write into Are.na has not been exercised by these tests.
 
 ## Troubleshooting
 

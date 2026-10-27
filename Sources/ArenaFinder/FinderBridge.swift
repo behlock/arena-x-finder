@@ -30,6 +30,10 @@ enum FinderBridge {
         try ProviderPaths.saveConfiguration(config)
         try await signal(liveDomain, channels: config.channels)
     }
+    static func signalThumbnailChanges() async throws {
+        guard let manager = NSFileProviderManager(for: liveDomain) else { return }
+        try await manager.signalEnumerator(for: .workingSet)
+    }
     static func reveal(_ domain: NSFileProviderDomain) async throws {
         guard let manager = NSFileProviderManager(for: domain) else { throw BridgeError.message("The Finder extension is not installed.") }
         let url = try await manager.getUserVisibleURL(for: .rootContainer)

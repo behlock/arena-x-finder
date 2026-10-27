@@ -22,7 +22,8 @@ public final class ArenaFileProviderExtension: NSObject, NSFileProviderReplicate
                     return token
                 }, metricsURL: directory.appendingPathComponent("request-counts.json"))
             }
-            return try ProviderEngine(directory: directory, backend: backend) {
+            return try ProviderEngine(directory: directory, backend: backend,
+                websiteThumbnails: demo ? nil : WebsiteThumbnailStore(directory: group.appendingPathComponent("website-thumbnails"))) {
                 demo ? FinderConfiguration(accountID: 0, channels: [DemoProviderBackend.channel]) : try ProviderPaths.configuration()
             }
         }

@@ -56,6 +56,20 @@ public struct ProviderRecord: Codable, Equatable, Sendable {
     public var inlineData: Data?
     public var size: Int64?
     public var version: String = "1"
+    public var websiteThumbnailRevision: String?
+    public var websiteThumbnailDate: Date?
+    public var websiteURL: URL? {
+        guard typeIdentifier == "com.apple.web-internet-location", let inlineData,
+              let value = try? PropertyListSerialization.propertyList(from: inlineData, format: nil) as? [String: String],
+              let string = value["URL"], let url = URL(string: string), WebsiteThumbnailStore.valid(url) else { return nil }
+        return url
+    }
+    public var contentVersion: Data {
+        guard websiteURL != nil else { return Data(version.utf8) }
+        // Publish preview changes as a new content version, alongside the date.
+        let value = version + "\n" + (thumbnail?.absoluteString ?? "") + "\n" + (websiteThumbnailRevision ?? "pending")
+        return Data(SHA256.hash(data: Data(value.utf8)))
+    }
     public var isFolder: Bool { typeIdentifier == UTType.folder.identifier }
     public static func channel(_ channel: FinderChannel) -> ProviderRecord {
         ProviderRecord(id: "channel-\(channel.id)", parent: "root", filename: cleanName(channel.title) + " [\(channel.id)]",
@@ -90,6 +104,7 @@ public struct ProviderRecord: Codable, Equatable, Sendable {
                 : webURL ?? "https://www.are.na/block/\(block.id)"
             record.inlineData = try PropertyListSerialization.data(fromPropertyList: ["URL": url], format: .xml, options: 0)
             record.typeIdentifier = "com.apple.web-internet-location"
+            record.thumbnail = block.image?.small?.src
             record.filename = fileName(title, id: block.id, ext: "webloc", fallback: "webloc")
         }
         if let data = record.inlineData { record.size = Int64(data.count) }

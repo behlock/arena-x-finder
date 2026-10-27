@@ -7,6 +7,22 @@ enum Application {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         installMenus()
+        if CommandLine.arguments.contains("--thumbnail-changed") {
+            Task {
+                do { try await FinderBridge.signalThumbnailChanges(); exit(0) }
+                catch { exit(1) }
+            }
+            app.run()
+            return
+        }
+        if CommandLine.arguments.contains("--thumbnail-worker") {
+            Task {
+                do { try await WebsiteThumbnailWorker.run(); exit(0) }
+                catch { fputs("Website thumbnail worker stopped.\n", stderr); exit(1) }
+            }
+            app.run()
+            return
+        }
         if CommandLine.arguments.contains("--finder-refresh") {
             Task {
                 do { try await FinderBridge.refresh(); print("Finder refresh requested."); exit(0) }

@@ -18,6 +18,9 @@ app="$staging/$app_name.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin/ArenaFinder" "$app/Contents/MacOS/$app_name"
 cp App/Info.plist "$app/Contents/Info.plist"
+worker="$app/Contents/Helpers/ArenaThumbnailWorker.app"
+mkdir -p "$worker/Contents/MacOS"
+cp "$bin/ArenaFinder" "$worker/Contents/MacOS/ArenaThumbnailWorker"
 # Advertise exactly the image decoders available on this macOS version.
 swift scripts/configure-image-service.swift "$app/Contents/Info.plist"
 extension="$app/Contents/PlugIns/ArenaProvider.appex"
@@ -33,10 +36,18 @@ if [ -z "$team" ] || [ "$team" = 'not set' ]; then
     printf 'The signing identity must belong to an Apple developer team.\n' >&2
     exit 1
 fi
-python3 - "$app" "$extension" "$staging" "$team" <<'PY'
+python3 - "$app" "$extension" "$staging" "$team" "$worker" <<'PY'
 import pathlib, plistlib, sys
 app, extension, staging = map(pathlib.Path, sys.argv[1:4])
 group = sys.argv[4] + '.com.behlock.arena-x-finder'
+worker = pathlib.Path(sys.argv[5])
+(worker / 'Contents/Info.plist').write_bytes(plistlib.dumps({
+    'CFBundleIdentifier': 'com.behlock.arena-x-finder.thumbnail-worker',
+    'CFBundleName': 'Are.na Thumbnail Worker', 'CFBundleExecutable': 'ArenaThumbnailWorker',
+    'CFBundlePackageType': 'APPL', 'CFBundleVersion': '1', 'CFBundleShortVersionString': '0.1.0',
+    'LSUIElement': True, 'LSMinimumSystemVersion': '13.0', 'NSPrincipalClass': 'NSApplication',
+    'ArenaAppGroup': group,
+}))
 for bundle in [app, extension]:
     path = bundle / 'Contents/Info.plist'
     info = plistlib.loads(path.read_bytes())
@@ -53,6 +64,7 @@ for name, sandboxed in [('app', False), ('provider', True)]:
     (staging / (name + '.entitlements')).write_bytes(plistlib.dumps(entitlements))
 PY
 codesign --force --sign "$identity" --options runtime --entitlements "$staging/provider.entitlements" "$extension"
+codesign --force --sign "$identity" --options runtime --entitlements "$staging/app.entitlements" "$worker"
 codesign --force --sign "$identity" --options runtime --entitlements "$staging/app.entitlements" "$app"
 codesign --verify --deep --strict "$app"
 replace_app "$app" "$destination"

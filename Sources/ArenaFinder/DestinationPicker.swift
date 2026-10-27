@@ -4,6 +4,8 @@ import ArenaCore
 @MainActor
 final class DestinationPicker: PanelPillButton {
     var onChange: (() -> Void)?
+    var onLoadMore: (() -> Void)?
+    var canLoadMore = false
     private(set) var selectedID: String?
     private var options: [Destination] = []
     private let popover = NSPopover()
@@ -25,6 +27,10 @@ final class DestinationPicker: PanelPillButton {
             self.onChange?()
         }
         choices.onCancel = { [weak self] in self?.popover.close() }
+        choices.onNearEnd = { [weak self] in
+            guard let self, self.popover.isShown, self.canLoadMore else { return }
+            self.onLoadMore?()
+        }
         heightAnchor.constraint(equalToConstant: 38).isActive = true
     }
 
@@ -42,7 +48,7 @@ final class DestinationPicker: PanelPillButton {
         }
         if options != destinations {
             options = destinations
-            if popover.isShown { choices.update(options, selectedID: selectedID) }
+            if popover.isShown { choices.update(options, selectedID: selectedID, preservingScroll: true) }
         }
         updateTitle()
     }
@@ -74,9 +80,11 @@ final class DestinationPicker: PanelPillButton {
 }
 
 @MainActor
-private final class DestinationChoicesController: NSViewController {
+final class DestinationChoicesController: NSViewController {
     var onSelect: ((String) -> Void)?
     var onCancel: (() -> Void)?
+    var onNearEnd: (() -> Void)?
+    private var updating = false
     private let scroll = NSScrollView()
     private let rows = NSStackView()
     private var options: [Destination] = []
@@ -93,6 +101,9 @@ private final class DestinationChoicesController: NSViewController {
         rows.alignment = .leading
         rows.spacing = 2
         scroll.documentView = rows
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(scrolled),
+            name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         view.addSubview(scroll)
         NSLayoutConstraint.activate([
             scroll.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
@@ -102,10 +113,17 @@ private final class DestinationChoicesController: NSViewController {
         ])
     }
 
-    func update(_ destinations: [Destination], selectedID: String?) {
+    func update(_ destinations: [Destination], selectedID: String?, preservingScroll: Bool = false) {
         _ = view
+        updating = true
+        defer { updating = false }
+        let origin = scroll.contentView.bounds.origin
+        let visibleIndex = buttons.firstIndex { scroll.documentVisibleRect.intersects($0.frame) }
+        let visibleID = visibleIndex.map { options[$0].id }
+        let visibleOffset = visibleIndex.map { buttons[$0].frame.minY - origin.y }
+        let highlightedID = options.indices.contains(highlightedIndex) ? options[highlightedIndex].id : nil
         options = destinations
-        highlightedIndex = options.firstIndex(where: { $0.id == selectedID }) ?? 0
+        highlightedIndex = options.firstIndex(where: { $0.id == (preservingScroll ? highlightedID : selectedID) }) ?? 0
         for row in rows.arrangedSubviews { rows.removeArrangedSubview(row); row.removeFromSuperview() }
         buttons = []
         for (index, option) in options.enumerated() {
@@ -132,19 +150,35 @@ private final class DestinationChoicesController: NSViewController {
         let rowHeight = CGFloat(max(1, options.count)) * 38
         rows.setFrameSize(NSSize(width: 304, height: rowHeight))
         preferredContentSize = NSSize(width: 320, height: min(280, rowHeight) + 16)
-        highlight()
+        highlight(scrollToSelection: !preservingScroll)
+        if preservingScroll {
+            var restored = origin
+            if let visibleID, let visibleOffset, let index = options.firstIndex(where: { $0.id == visibleID }) {
+                restored.y = buttons[index].frame.minY - visibleOffset
+            }
+            scroll.contentView.scroll(to: restored)
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
+    }
+
+    @objc private func scrolled() {
+        guard !updating, view.window != nil else { return }
+        // Inspect visible rows rather than a scroll percentage: AppKit document
+        // coordinates can be flipped, and fetching must follow actual browsing.
+        let visible = scroll.documentVisibleRect
+        if buttons.suffix(3).contains(where: { visible.intersects($0.frame) }) { onNearEnd?() }
     }
 
     func focusChoices() { view.window?.makeFirstResponder(self) }
     override var acceptsFirstResponder: Bool { true }
     override func keyDown(with event: NSEvent) { interpretKeyEvents([event]) }
 
-    private func highlight() {
+    private func highlight(scrollToSelection: Bool = true) {
         for (index, button) in buttons.enumerated() {
             button.isKeyboardSelected = index == highlightedIndex
         }
         rows.layoutSubtreeIfNeeded()
-        if buttons.indices.contains(highlightedIndex) {
+        if scrollToSelection && buttons.indices.contains(highlightedIndex) {
             rows.scrollToVisible(buttons[highlightedIndex].frame)
         }
     }
@@ -157,6 +191,7 @@ private final class DestinationChoicesController: NSViewController {
     override func moveDown(_ sender: Any?) {
         highlightedIndex = min(max(0, options.count - 1), highlightedIndex + 1)
         highlight()
+        if highlightedIndex >= options.count - 3 { onNearEnd?() }
     }
 
     override func moveUp(_ sender: Any?) {

@@ -29,9 +29,9 @@ The installer builds and signs the app and its sandboxed File Provider extension
 2. Create a token with **write** access.
 3. Paste it into the app and click **Connect**.
 
-Once connected, the compact panel shows a channel picker and one **Add to Finder** / **Open in Finder** action. **Add by URL…** and **⋯** sit underneath; account settings open separately.
+Once connected, the compact panel shows a channel picker and one **Add to Finder** / **Open in Finder** action. **Add by URL…** sits underneath. Account and recovery controls live in the macOS **Are.na x Finder** menu.
 
-The app validates the token against your profile and saves it in macOS Keychain. Tokens are never stored in the repository or the queue’s JSON file. Your account’s channels load one page at a time; choose **Options → Load more channels…** for the next page. **Add by URL…** adds a specific accessible channel directly to Finder, including private and shared channels.
+The app validates the token against your profile and saves it in macOS Keychain. Tokens are never stored in the repository or the queue’s JSON file. Your account’s channels load one page at a time as you scroll to the end of the channel picker. **Add by URL…** adds a specific accessible channel directly to Finder, including private and shared channels.
 
 If channel discovery is unavailable for your account, you can still add a channel by URL after connecting. A successful connection validates your identity; each Finder folder reflects its own channel’s upload permissions.
 
@@ -48,7 +48,7 @@ Channels you explicitly add appear at the top level under **Are.na x Finder** in
 - **Preview:** thumbnails use small image versions; Quick Look and opening/copying a file fetch its full contents when needed. Downloaded files may be evicted by macOS.
 - **Website previews:** `.webloc` items use Are.na's small preview image when available, otherwise the capture and rendering code from Webloc Thumbnails generates a screenshot automatically. A background helper handles loaded channel items, caches successful screenshots for seven days, and backs off failed captures for a day. Sites requiring sign-in or blocking capture may retain a generic icon. The renderer uses an isolated browser session and never receives the Are.na token.
 - **Upload:** drop regular files up to **100 MB** into a writable channel folder. Finder manages the local pending copy and invokes the extension. The native import path preserves the original bytes; it does not use the picker’s image resizing.
-- **Refresh:** opening a channel or a **More items** folder checks its listing automatically when Finder subscribes to that directory. A 15-second freshness window avoids repeat API requests. Cached items remain available if the request fails. **Options → Refresh** forces a refresh when needed; this prototype does not continuously poll or use server push notifications.
+- **Refresh:** opening a channel or a **More items** folder checks its listing automatically when Finder subscribes to that directory. A 15-second freshness window avoids repeat API requests. Cached items remain available if the request fails. **Are.na x Finder → Refresh** forces a refresh when needed; this prototype does not continuously poll or use server push notifications.
 - **Long channels:** each folder shows up to **100 items**, plus a **More items (page N)** folder when another batch exists. Open that folder to fetch the next batch of up to 100. Channels with 100 or fewer items fit in one folder. Finder eagerly requests every native continuation page, so explicit page folders prevent a normal folder visit from fetching the whole channel.
 - **Names:** channel and block IDs are appended to names to distinguish duplicate titles. The same channel can appear in multiple branches independently. A connection back to an ancestor stays a `.webloc` shortcut to prevent an endless folder chain.
 - **Scope:** remote rename, move, delete, folder creation, and edits to existing files are unavailable. Existing remote files appear read-only. Dropping new files is supported.
@@ -73,11 +73,11 @@ Are.na’s API guidance prohibits systematic downloading and account-wide crawli
 
 Copy/paste or drag regular files into a writable channel folder under **Are.na x Finder**. Finder handles the pending copy and upload; you can close the management window. The app no longer has a send arrow, image-batch controls, or a **Send to Are.na** service.
 
-Finder uploads preserve original file bytes and accept individual files up to 100 MB. Channel permissions and Are.na account storage limits still apply. Use **Options → Refresh** to request updated listings.
+Finder uploads preserve original file bytes and accept individual files up to 100 MB. Channel permissions and Are.na account storage limits still apply. Use **Are.na x Finder → Refresh** to request updated listings.
 
 ## Interrupted uploads
 
-Finder shows upload progress and errors on the affected files. When a creation request has an uncertain result, **Options → Review interrupted uploads…** appears in the app. Check the channel before linking an existing block or allowing a retry; this prevents duplicates after a dropped connection. Recovery is hidden when there is nothing to review.
+Finder shows upload progress and errors on the affected files. When a creation request has an uncertain result, **Are.na x Finder → Review interrupted uploads…** appears in the app. Check the channel before linking an existing block or allowing a retry; this prevents duplicates after a dropped connection. Recovery is hidden when there is nothing to review.
 
 Existing data from the retired image-batch uploader remains in `~/Library/Application Support/Are.na x Finder/`; the new interface does not submit or delete those historical batches.
 
@@ -123,7 +123,7 @@ Validated on the development Mac: native domain registration, private-channel li
 - **Keychain prompt:** allow the signed app to access its saved token when connecting. Reconnect after switching signing identities. The native integration uses the macOS login Keychain ACL API, which is deprecated but works on the tested system; a distributable release should move to a provisioned shared Keychain group.
 - **Paste:** the app provides the standard Edit menu and ⌘V in its secure token field.
 - **Finder location missing or disabled:** reinstall the signed app, click **Add to Finder**, and enable the provider in Finder if prompted.
-- **Only 100 items:** open **More items** for the next batch. After upgrading from the 24-item version, use **Options → Refresh** to update existing listings.
+- **Only 100 items:** open **More items** for the next batch. After upgrading from the 24-item version, use **Are.na x Finder → Refresh** to update existing listings.
 - **Live upload test:** drop a file you intend to add into a channel and check it on Are.na; the local demo only verifies the Finder side of importing.
 
 ## API references

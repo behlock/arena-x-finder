@@ -10,13 +10,12 @@ final class PickerController: NSWindowController, NSMenuDelegate {
     private var user: ArenaUser?
     private var nextPage: Int?
     private var loading = false
+    private var loadingMore = false
     private var message = ""
     private let stack = NSStackView()
     private let tokenField = NSSecureTextField()
     private let channelPicker = DestinationPicker()
     private let statusLabel = PanelStyle.label("", color: .secondaryLabelColor, wrapping: true)
-    private let optionsButton = PointingHandButton(frame: .zero)
-    private let optionsMenu = NSMenu()
     private var footer: NSView!
     private var setup: NSView!
     private var channelPanel: NSView!
@@ -24,7 +23,6 @@ final class PickerController: NSWindowController, NSMenuDelegate {
     private var finderButton: NSButton!
     private var addButton: NSButton!
     private var refreshItem: NSMenuItem!
-    private var moreItem: NSMenuItem!
     private var reviewItem: NSMenuItem!
     private var accountItem: NSMenuItem!
 
@@ -56,6 +54,7 @@ final class PickerController: NSWindowController, NSMenuDelegate {
         addRow(setup)
 
         channelPicker.onChange = { [weak self] in self?.refresh() }
+        channelPicker.onLoadMore = { [weak self] in self?.loadMore() }
         finderButton = button("Add to Finder", #selector(showSelectedChannel))
         finderButton.keyEquivalent = "\r"
         finderButton.contentTintColor = .systemBlue
@@ -72,7 +71,7 @@ final class PickerController: NSWindowController, NSMenuDelegate {
         addButton.font = .systemFont(ofSize: 12)
         addButton.contentTintColor = .secondaryLabelColor
         addButton.widthAnchor.constraint(equalToConstant: 112).isActive = true
-        let footerRow = NSStackView(views: [addButton, NSView(), optionsButton])
+        let footerRow = NSStackView(views: [addButton, NSView()])
         footerRow.alignment = .centerY
         footer = footerRow
         addRow(footerRow)
@@ -96,42 +95,30 @@ final class PickerController: NSWindowController, NSMenuDelegate {
     private var selectionIsInFinder: Bool { selected.map { choice in finderChannels.contains { $0.id == choice.channelID } } ?? false }
 
     private func configureMenu() {
-        let menu = optionsMenu
+        guard let menu = NSApp.mainMenu?.items.first?.submenu else { return }
         menu.autoenablesItems = false; menu.delegate = self
-        refreshItem = menuItem("Refresh", #selector(refreshAll), in: menu)
-        moreItem = menuItem("Load more channels…", #selector(loadMore), in: menu)
-        menu.addItem(.separator())
-        accountItem = menuItem("Account…", #selector(showAccount), in: menu)
-        reviewItem = menuItem("Review interrupted uploads…", #selector(reviewFinderUploads), in: menu)
-        optionsButton.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "Options")
-        optionsButton.imagePosition = .imageOnly
-        optionsButton.isBordered = false
-        optionsButton.target = self
-        optionsButton.action = #selector(showOptions)
-        optionsButton.contentTintColor = .secondaryLabelColor
-        optionsButton.setAccessibilityLabel("Options")
-        optionsButton.toolTip = "Account and refresh"
-        optionsButton.widthAnchor.constraint(equalToConstant: 28).isActive = true
-        optionsButton.heightAnchor.constraint(equalToConstant: 28).isActive = true
-    }
-    @objc private func showOptions() {
-        optionsMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: optionsButton.bounds.maxY + 4), in: optionsButton)
-    }
-    private func menuItem(_ title: String, _ action: Selector, in menu: NSMenu) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
-        item.target = self; menu.addItem(item); return item
+        accountItem = NSMenuItem(title: "Account…", action: #selector(showAccount), keyEquivalent: ",")
+        accountItem.target = self
+        menu.insertItem(accountItem, at: 0)
+        refreshItem = NSMenuItem(title: "Refresh", action: #selector(refreshAll), keyEquivalent: "r")
+        refreshItem.target = self
+        menu.insertItem(refreshItem, at: 1)
+        reviewItem = NSMenuItem(title: "Review interrupted uploads…", action: #selector(reviewFinderUploads), keyEquivalent: "")
+        reviewItem.target = self
+        menu.insertItem(reviewItem, at: 2)
+        menu.insertItem(.separator(), at: 3)
     }
     func menuWillOpen(_ menu: NSMenu) { updateMenu() }
     private func updateMenu() {
-        refreshItem.isEnabled = client != nil && !loading
-        moreItem.isHidden = nextPage == nil
-        moreItem.isEnabled = client != nil && !loading
-        accountItem.isEnabled = !loading
+        guard let refreshItem, let accountItem, let reviewItem else { return }
+        let idle = !loading && !loadingMore && window?.attachedSheet == nil
+        refreshItem.isEnabled = client != nil && idle
+        accountItem.isEnabled = idle
         accountItem.title = user.map { "Account: \($0.name)…" } ?? "Account…"
         let directory = try? ProviderPaths.groupDirectory().appendingPathComponent("provider-live")
         let interrupted = directory.flatMap { try? ProviderEngine.interruptedUploads(in: $0) } ?? []
         reviewItem.isHidden = interrupted.isEmpty
-        reviewItem.isEnabled = !loading
+        reviewItem.isEnabled = idle
     }
     private func button(_ title: String, _ action: Selector) -> NSButton {
         let button = PanelPillButton(frame: .zero)
@@ -166,6 +153,7 @@ final class PickerController: NSWindowController, NSMenuDelegate {
     }
     private func refresh() {
         channelPicker.update(store.destinations, rememberedID: store.lastDestinationID)
+        channelPicker.canLoadMore = nextPage != nil && !loading && !loadingMore
         channelPicker.isEnabled = client != nil && !loading
         channelPanel.isHidden = client == nil
         setup.isHidden = client != nil || loading
@@ -183,6 +171,7 @@ final class PickerController: NSWindowController, NSMenuDelegate {
     @objc private func openTokens() { NSWorkspace.shared.open(URL(string: "https://www.are.na/settings/personal-access-tokens")!) }
     @objc private func showAccount() {
         guard let window else { return }
+        if !window.isVisible { showWindow(nil) }
         let alert = NSAlert()
         alert.messageText = "Are.na account"
         alert.informativeText = "Enter a new token to reconnect."
@@ -247,7 +236,7 @@ final class PickerController: NSWindowController, NSMenuDelegate {
         }
     }
     @objc private func refreshAll() {
-        guard !loading, client != nil else { return }
+        guard !loading, !loadingMore, client != nil else { return }
         loading = true; message = "Refreshing…"; refresh()
         Task {
             var errors: [String] = []
@@ -261,16 +250,17 @@ final class PickerController: NSWindowController, NSMenuDelegate {
     }
     @objc private func reviewFinderUploads() {
         guard let window else { return }
+        if !window.isVisible { showWindow(nil) }
         do { try FinderBridge.reviewUploads(window: window) }
         catch { message = error.localizedDescription; refresh() }
     }
-    @objc private func loadMore() {
-        guard !loading, let nextPage else { return }
-        loading = true; message = "Loading channels…"; refresh()
+    private func loadMore() {
+        guard !loading, !loadingMore, let nextPage else { return }
+        loadingMore = true; message = ""; refresh()
         Task {
             do { try await fetchChannels(page: nextPage); message = "" }
             catch { message = error.localizedDescription }
-            loading = false; refresh()
+            loadingMore = false; refresh()
         }
     }
     @objc private func addChannel() {

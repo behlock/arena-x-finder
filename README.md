@@ -45,7 +45,7 @@ Only channels you explicitly add appear under **Are.na x Finder** in Finder’s 
 - **Preview:** thumbnails use small image versions; Quick Look and opening/copying a file fetch its full contents when needed. Downloaded files may be evicted by macOS.
 - **Upload:** drop regular files up to **100 MB** into a writable channel folder. Finder manages the local pending copy and invokes the extension. The native import path preserves the original bytes; it does not use the picker’s image resizing.
 - **Refresh:** use **Refresh Finder** in the app to request fresh listings. This prototype does not continuously poll or use server push notifications.
-- **Long channels:** each folder shows up to **24 blocks**, plus a **More items (page N)** folder. Open that folder to fetch the next page. Finder eagerly requests every native continuation page, so explicit page folders prevent a normal folder visit from fetching the whole channel.
+- **Long channels:** each folder shows up to **100 items**, plus a **More items (page N)** folder when another batch exists. Open that folder to fetch the next batch of up to 100. Channels with 100 or fewer items fit in one folder. Finder eagerly requests every native continuation page, so explicit page folders prevent a normal folder visit from fetching the whole channel.
 - **Names:** channel and block IDs are appended to names to distinguish duplicate titles. Nested channel shortcuts avoid recursive channel graphs.
 - **Scope:** remote rename, move, delete, folder creation, and edits to existing files are unavailable. Existing remote files appear read-only. Dropping new files is supported.
 
@@ -129,7 +129,7 @@ Validated on the development Mac: native domain registration, private-channel li
 - **Keychain prompt:** allow the signed app to access its saved token when connecting. Reconnect after switching signing identities. The native integration uses the macOS login Keychain ACL API, which is deprecated but works on the tested system; a distributable release should move to a provisioned shared Keychain group.
 - **Paste:** the app provides the standard Edit menu and ⌘V in its secure token field.
 - **Finder location missing or disabled:** reinstall the signed app, click **Show channel in Finder**, and enable the provider in Finder if prompted.
-- **Only 24 blocks:** open **More items** for the next page.
+- **Only 100 items:** open **More items** for the next batch. After upgrading from the 24-item version, use **Refresh Finder** to update existing listings.
 - **Live upload test:** drop a file you intend to add into a channel and check it on Are.na; the local demo only verifies the Finder side of importing.
 
 ## API references

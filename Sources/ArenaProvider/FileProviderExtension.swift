@@ -131,7 +131,8 @@ final class ProviderEnumerator: NSObject, NSFileProviderEnumerator {
     func enumerateChanges(for observer: NSFileProviderChangeObserver, from anchor: NSFileProviderSyncAnchor) {
         Task {
             do {
-                if parent != "working" { _ = try await engine.list(parent) }
+                if parent == "working" { try await engine.refreshLoadedPages() }
+                else { _ = try await engine.list(parent) }
                 let revision = Int(String(data: anchor.rawValue, encoding: .utf8) ?? "0") ?? 0
                 let changes = try await engine.changes(after: revision, parent: parent == "working" ? nil : parent)
                 observer.didUpdate(changes.updated.filter { parent == "working" || $0.parent == parent }.map(FileProviderItem.init))

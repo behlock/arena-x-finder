@@ -1,5 +1,15 @@
 # Complete Finder listings: investigation, 27 October 2026
 
+## Implementation follow-up
+
+The 100-item page size is now installed. Verified in the real Hardware Finder
+folder: 67 items, no continuation folder, one metadata-page request, and no
+original-file downloads during refresh. Existing cached page folders migrate
+without changing surviving block identifiers. Refresh now reconciles previously
+opened pages through macOS's working-set change feed. Channels above 100 items
+still use explicit continuation folders, each containing at most 100 remote
+items. The investigation below records the findings before this implementation.
+
 ## Finding
 
 Hardware currently contains 67 items, as shown by the signed-in Are.na channel

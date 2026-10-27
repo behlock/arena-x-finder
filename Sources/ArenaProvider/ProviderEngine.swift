@@ -36,6 +36,7 @@ public actor ProviderEngine {
         var loadedPages: [String: [String]] = [:]
         var pageGenerations: [String: Int] = [:]
         var generation: Int = -1
+        var listingPageSize: Int?
         var imports: [String: ImportAttempt] = [:]
         var revision: Int = 0
         var changes: [Change] = []
@@ -52,6 +53,12 @@ public actor ProviderEngine {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let url = directory.appendingPathComponent("provider-state.json")
         snapshot = FileManager.default.fileExists(atPath: url.path) ? try JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: url)) : Snapshot()
+        if snapshot.listingPageSize != ArenaClient.channelContentsPageSize {
+            // Keep records and upload recovery intact until a fresh listing arrives.
+            snapshot.pageGenerations.removeAll()
+            snapshot.listingPageSize = ArenaClient.channelContentsPageSize
+            try persist()
+        }
     }
     private func persist() throws {
         let url = directory.appendingPathComponent("provider-state.json")
@@ -63,6 +70,16 @@ public actor ProviderEngine {
         snapshot.records[record.id] = record
         snapshot.revision += 1
         snapshot.changes.append(Change(revision: snapshot.revision, id: record.id, deleted: false, parent: record.parent))
+    }
+    private func forgetTree(_ id: String) {
+        guard let record = snapshot.records[id] else { return }
+        let children = snapshot.records.values.filter { $0.parent == id }.map(\.id)
+        for child in children { forgetTree(child) }
+        snapshot.records.removeValue(forKey: id)
+        snapshot.loadedPages.removeValue(forKey: id)
+        snapshot.pageGenerations.removeValue(forKey: id)
+        snapshot.revision += 1
+        snapshot.changes.append(Change(revision: snapshot.revision, id: id, deleted: true, parent: record.parent))
     }
     private func loadConfiguration() throws -> FinderConfiguration {
         let config = try configuration()
@@ -102,12 +119,12 @@ public actor ProviderEngine {
         // One explicit folder contains one API page. Finder otherwise eagerly
         // follows every continuation page, even when its window is not scrolling.
         let fresh = Set(records.map(\.id))
-        for id in snapshot.loadedPages[parent] ?? [] where !fresh.contains(id) && snapshot.records[id]?.parent == parent {
-            snapshot.records.removeValue(forKey: id)
-            snapshot.revision += 1
-            snapshot.changes.append(Change(revision: snapshot.revision, id: id, deleted: true, parent: parent))
-        }
+        // Move surviving items to their new parent before removing obsolete page
+        // folders, so a page-size upgrade doesn't delete their stable identifiers.
         records.forEach { remember($0) }
+        for id in snapshot.loadedPages[parent] ?? [] where !fresh.contains(id) && snapshot.records[id]?.parent == parent {
+            forgetTree(id)
+        }
         snapshot.loadedPages[parent] = records.map(\.id)
         snapshot.pageGenerations[parent] = config.refreshGeneration
         try persist()
@@ -127,6 +144,17 @@ public actor ProviderEngine {
         return data
     }
     public func revision() -> Int { snapshot.revision }
+    public func refreshLoadedPages() async throws {
+        // macOS applies remote changes through the working-set enumerator. Only
+        // revisit pages the user previously opened, and only list()'s stale pages
+        // issue requests. Visit parents first in case they remove old page folders.
+        let parents = snapshot.loadedPages.keys.sorted {
+            (snapshot.records[$0]?.page ?? 0) < (snapshot.records[$1]?.page ?? 0)
+        }
+        for parent in parents where snapshot.records[parent]?.isFolder == true {
+            _ = try await list(parent)
+        }
+    }
     public func changes(after revision: Int, parent: String? = nil) throws -> (updated: [ProviderRecord], deleted: [String], revision: Int) {
         _ = try loadConfiguration()
         let ids = Set(snapshot.changes.filter { $0.revision > revision && (parent == nil || $0.parent == parent) }.map(\.id))

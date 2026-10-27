@@ -7,6 +7,14 @@ enum Application {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         installMenus()
+        if CommandLine.arguments.contains("--finder-refresh") {
+            Task {
+                do { try await FinderBridge.refresh(); print("Finder refresh requested."); exit(0) }
+                catch { fputs("Could not refresh Finder: \(error)\n", stderr); exit(1) }
+            }
+            app.run()
+            return
+        }
         if CommandLine.arguments.contains("--finder-remove-demo") {
             Task {
                 do { try await FinderBridge.removeDemo(); exit(0) }

@@ -23,6 +23,7 @@ private final class NoRedirects: NSObject, URLSessionTaskDelegate {
 }
 
 public final class ArenaClient {
+    public static let channelContentsPageSize = 100
     public typealias Transport = (URLRequest) async throws -> (Data, HTTPURLResponse)
     private let token: String
     private let transport: Transport
@@ -53,7 +54,7 @@ public final class ArenaClient {
     }
     public func block(_ id: Int) async throws -> ArenaBlock { try await request("blocks/\(id)") }
     public func contents(channelID: Int, page: Int) async throws -> BlockPage {
-        try await request("channels/\(channelID)/contents?per=24&page=\(page)&sort=position_desc")
+        try await request("channels/\(channelID)/contents?per=\(Self.channelContentsPageSize)&page=\(page)&sort=position_desc")
     }
     public func fullBlock(_ id: Int) async throws -> RemoteBlock { try await request("blocks/\(id)") }
 

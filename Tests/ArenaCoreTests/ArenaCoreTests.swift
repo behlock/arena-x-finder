@@ -36,6 +36,21 @@ final class ArenaCoreTests: XCTestCase {
             XCTAssertThrowsError(try ArenaClient.channelSlug(invalid))
         }
     }
+    func testContentsRequestsOneHundredItemsWithoutFollowingNextPage() async throws {
+        var requests: [URLRequest] = []
+        let client = ArenaClient(token: "test", transport: { request in
+            requests.append(request)
+            let data = Data(#"{"data":[],"meta":{"current_page":1,"next_page":2,"has_more_pages":true}}"#.utf8)
+            return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        })
+        let page = try await client.contents(channelID: 99, page: 1)
+        XCTAssertEqual(requests.count, 1)
+        let url = try XCTUnwrap(requests.first?.url)
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(query.first { $0.name == "per" }?.value, "100")
+        XCTAssertEqual(query.first { $0.name == "page" }?.value, "1")
+        XCTAssertEqual(page.meta.next_page, 2)
+    }
 
     @MainActor func testQueueSurvivesRestartAndDeletingOriginal() async throws {
         let (store, job) = try await queued()

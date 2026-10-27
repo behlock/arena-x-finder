@@ -40,6 +40,50 @@ final class ProviderTests: XCTestCase {
         let counts = await backend.counts()
         XCTAssertEqual(counts.1, 1)
     }
+    func testPageSizeUpgradeMovesCachedChildrenBeforeRemovingOldPageFolder() async throws {
+        let backend = TestBackend()
+        let first = try engine(backend)
+        _ = try await first.list("channel-1")
+        _ = try await first.list("page-1-2")
+        let anchor = await first.revision()
+        // Simulate the pre-upgrade snapshot, which had no page-size field.
+        let stateURL = directory.appendingPathComponent("state/provider-state.json")
+        var state = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: stateURL)) as? [String: Any])
+        state.removeValue(forKey: "listingPageSize")
+        try JSONSerialization.data(withJSONObject: state).write(to: stateURL)
+        await backend.flattenListing()
+        let upgraded = try engine(backend)
+        try await upgraded.refreshLoadedPages()
+        let records = try await upgraded.list("channel-1")
+        XCTAssertEqual(Set(records.map(\.id)), Set(["block-1-1", "block-1-2"]))
+        XCTAssertTrue(records.allSatisfy { $0.parent == "channel-1" })
+        let changes = try await upgraded.changes(after: anchor)
+        XCTAssertEqual(changes.deleted, ["page-1-2"])
+        let working = try await upgraded.list("working")
+        XCTAssertFalse(working.contains { $0.id == "page-1-2" || $0.parent == "page-1-2" })
+        let counts = await backend.counts()
+        XCTAssertEqual(counts.0, [1, 2, 1])
+        XCTAssertEqual(counts.1, 0)
+    }
+    func testWorkingSetRefreshRevisitsOnlyPreviouslyOpenedPages() async throws {
+        let backend = TestBackend()
+        let configURL = directory.appendingPathComponent("config.json")
+        var config = FinderConfiguration(accountID: 1, channels: [DemoProviderBackend.channel])
+        try JSONEncoder().encode(config).write(to: configURL)
+        let engine = try ProviderEngine(directory: directory.appendingPathComponent("state"), backend: backend) {
+            try JSONDecoder().decode(FinderConfiguration.self, from: Data(contentsOf: configURL))
+        }
+        _ = try await engine.list("channel-1")
+        try await engine.refreshLoadedPages()
+        var counts = await backend.counts()
+        XCTAssertEqual(counts.0, [1])
+        config.refreshGeneration += 1
+        try JSONEncoder().encode(config).write(to: configURL)
+        try await engine.refreshLoadedPages()
+        counts = await backend.counts()
+        XCTAssertEqual(counts.0, [1, 1])
+        XCTAssertEqual(counts.1, 0)
+    }
     func testImportReplayAcrossRestartCreatesOnlyOneRemoteBlock() async throws {
         let backend = try DemoProviderBackend(directory: directory.appendingPathComponent("remote"))
         let firstEngine = try engine(backend)
@@ -134,12 +178,19 @@ private actor TestBackend: ProviderBackend {
     var creates = 0
     var fail = false
     var empty = false
+    var flattened = false
+    func flattenListing() { flattened = true }
     func failCreate() { fail = true }
     func emptyListing() { empty = true }
     func counts() -> ([Int], Int) { (pages, downloads) }
     func list(channel: FinderChannel, page: Int, parent: String) async throws -> ProviderPage {
         pages.append(page)
         if empty { return ProviderPage(records: [], nextPage: nil) }
+        if flattened {
+            return ProviderPage(records: (1...2).map { (id: Int) in
+                ProviderRecord(id: "block-1-\(id)", parent: parent, filename: "Example \(id).txt", typeIdentifier: "public.plain-text", channelID: 1, blockID: id)
+            }, nextPage: nil)
+        }
         return ProviderPage(records: [ProviderRecord(id: "block-1-\(page)", parent: parent, filename: "Example.txt", typeIdentifier: "public.plain-text", channelID: 1, blockID: page)], nextPage: page == 1 ? 2 : nil)
     }
     func contents(_ record: ProviderRecord) async throws -> Data { downloads += 1; return Data("hello".utf8) }

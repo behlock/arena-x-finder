@@ -29,6 +29,8 @@ final class PickerController: NSWindowController {
     private var resumeButton: NSButton!
     private var discardButton: NSButton!
     private var reviewButton: NSButton!
+    private var finderButton: NSButton!
+    private var finderRefreshButton: NSButton!
     private var queueLabel = PanelStyle.label("", color: .secondaryLabelColor, wrapping: true)
 
     init(store: Store, uploader: Uploader, urls: [URL]) {
@@ -78,6 +80,10 @@ final class PickerController: NSWindowController {
         moreButton = button("Load more", #selector(loadMore))
         addButton = button("Add channel URL…", #selector(addChannel))
         addRow(NSStackView(views: [refreshButton, moreButton, addButton]))
+        finderButton = button("Show channel in Finder", #selector(addToFinder))
+        finderRefreshButton = button("Refresh Finder", #selector(refreshFinder))
+        addRow(NSStackView(views: [finderButton, finderRefreshButton]))
+        addRow(button("Review Finder uploads…", #selector(reviewFinderUploads)))
         addRow(statusLabel)
         addRow(queueLabel)
         resumeButton = button("Resume", #selector(resume))
@@ -155,6 +161,8 @@ final class PickerController: NSWindowController {
         refreshButton.isEnabled = client != nil && !busy
         moreButton.isEnabled = client != nil && nextPage != nil && !busy
         addButton.isEnabled = client != nil && !busy
+        finderButton.isEnabled = client != nil && selected != nil && !busy
+        finderRefreshButton.isEnabled = client != nil && !busy
         resumeButton.isEnabled = client != nil && !busy && !store.jobs.isEmpty && uncertain == nil
         reviewButton.isHidden = uncertain == nil
         reviewButton.isEnabled = !busy
@@ -181,6 +189,7 @@ final class PickerController: NSWindowController {
         do {
             let candidate = ArenaClient(token: token)
             let account = try await candidate.me()
+            try FinderBridge.validateAccount(account.id)
             try store.setAccount(account.id)
             try TokenStore.save(token)
             client = candidate; user = account
@@ -197,6 +206,33 @@ final class PickerController: NSWindowController {
         if store.destinations.isEmpty { message = "No channels loaded. Add a channel URL, or load the next page." }
     }
     @objc private func reloadChannels() { loadChannels(page: 1) }
+    @objc private func addToFinder() {
+        guard !busy, let client, let user, let selected else { return }
+        loading = true; message = "Adding channel to Finder…"; refresh()
+        Task {
+            do {
+                let channel = try await client.channel(selected.slug)
+                if let token = try TokenStore.read() { try TokenStore.save(token) }
+                try await FinderBridge.addChannel(channel, accountID: user.id)
+                message = "Channel added. Drop files into its Finder folder to upload."
+            } catch { message = error.localizedDescription }
+            loading = false; refresh()
+        }
+    }
+    @objc private func refreshFinder() {
+        guard !busy else { return }
+        loading = true; refresh()
+        Task {
+            do { try await FinderBridge.refresh(); message = "Finder refresh requested." }
+            catch { message = error.localizedDescription }
+            loading = false; refresh()
+        }
+    }
+    @objc private func reviewFinderUploads() {
+        guard let window else { return }
+        do { try FinderBridge.reviewUploads(window: window) }
+        catch { message = error.localizedDescription; refresh() }
+    }
     @objc private func loadMore() { if let nextPage { loadChannels(page: nextPage) } }
     private func loadChannels(page: Int) {
         guard !busy else { return }

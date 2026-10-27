@@ -21,13 +21,12 @@ enum TokenStore {
         return token
     }
     static func save(_ token: String) throws {
-        let attributes: [String: Any] = [kSecValueData as String: Data(token.utf8)]
-        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            var item = query.merging(attributes) { _, new in new }
-            item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            status = SecItemAdd(item as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw BridgeError.message("Couldn’t save your token in Keychain (\(status)).") }
+        try CredentialVault.save(token, trustedPaths: trustedPaths)
+    }
+    static var trustedPaths: [String] {
+        var paths = [Bundle.main.executableURL!.path]
+        let provider = Bundle.main.bundleURL.appendingPathComponent("Contents/PlugIns/ArenaProvider.appex/Contents/MacOS/ArenaProvider")
+        if FileManager.default.fileExists(atPath: provider.path) { paths.append(provider.path) }
+        return paths
     }
 }

@@ -52,6 +52,10 @@ public final class ArenaClient {
         return try await request("channels/\(slug)")
     }
     public func block(_ id: Int) async throws -> ArenaBlock { try await request("blocks/\(id)") }
+    public func contents(channelID: Int, page: Int) async throws -> BlockPage {
+        try await request("channels/\(channelID)/contents?per=24&page=\(page)&sort=position_desc")
+    }
+    public func fullBlock(_ id: Int) async throws -> RemoteBlock { try await request("blocks/\(id)") }
 
     public static func channelSlug(_ input: String) throws -> String {
         let value = input.trimmingCharacters(in: .whitespacesAndNewlines)

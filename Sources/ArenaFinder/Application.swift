@@ -6,6 +6,23 @@ enum Application {
     @MainActor static func main() {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+        installMenus()
+        if CommandLine.arguments.contains("--finder-remove-demo") {
+            Task {
+                do { try await FinderBridge.removeDemo(); exit(0) }
+                catch { fputs("Could not remove demo: \(error)\n", stderr); exit(1) }
+            }
+            app.run()
+            return
+        }
+        if CommandLine.arguments.contains("--finder-smoke") {
+            Task {
+                do { try await FinderBridge.smoke(); exit(0) }
+                catch { fputs("Finder smoke test: \(error)\n", stderr); exit(1) }
+            }
+            app.run()
+            return
+        }
         do {
             try handOverFromOtherCopies()
             let override = ProcessInfo.processInfo.environment["ARENA_FINDER_DATA_DIR"]
@@ -23,6 +40,24 @@ enum Application {
             alert.informativeText = error.localizedDescription
             alert.runModal()
         }
+    }
+
+    @MainActor private static func installMenus() {
+        let menu = NSMenu()
+        let applicationItem = NSMenuItem()
+        let application = NSMenu(title: "Are.na x Finder")
+        application.addItem(withTitle: "Quit Are.na x Finder", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        applicationItem.submenu = application; menu.addItem(applicationItem)
+        let editItem = NSMenuItem()
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = edit; menu.addItem(editItem)
+        NSApp.mainMenu = menu
     }
 
     @MainActor private static func handOverFromOtherCopies() throws {

@@ -13,4 +13,5 @@ if [ "$(cd "$application_directory" && pwd)/$app_name.app" != "$PWD/build/$app_n
     "$launch_services" -u "$PWD/build/$app_name.app" >/dev/null 2>&1 || true
 fi
 "$launch_services" -f "$destination"
+pluginkit -a "$destination/Contents/PlugIns/ArenaProvider.appex"
 printf 'Installed %s\nOpen it once to connect your Are.na account.\n' "$destination"

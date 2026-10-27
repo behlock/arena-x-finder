@@ -1,15 +1,12 @@
 import AppKit
 import WebKit
 import ArenaProvider
-import ThumbnailCore
-import ThumbnailCapture
 
 @MainActor
 enum WebsiteThumbnailWorker {
     static func run() async throws {
         let group = try ProviderPaths.groupDirectory()
         let store = WebsiteThumbnailStore(directory: group.appendingPathComponent("website-thumbnails"))
-        let images = IconWorker(cacheDirectory: group.appendingPathComponent("website-render-cache"))
         let capture = PageCapture(dataStore: .nonPersistent())
         while !Task.isCancelled {
             let pending = try store.pending()
@@ -17,8 +14,11 @@ enum WebsiteThumbnailWorker {
                 try Task.checkCancellation()
                 do {
                     let screenshot = try await capture.capture(request.url, timeout: 20)
-                    let icon = try await images.prepare(screenshot: screenshot, websiteURL: request.url)
-                    let png = try await Task.detached { try IconRenderer.pngData(icon.image) }.value
+                    let png = try await Task.detached {
+                        let image = try IconRenderer.render(screenshot: screenshot.image, websiteURL: request.url)
+                        return try IconRenderer.pngData(image)
+                    }.value
+                    try Task.checkCancellation()
                     try store.complete(request.url, png: png)
                 } catch is CancellationError { throw CancellationError() }
                 catch {

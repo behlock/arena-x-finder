@@ -4,7 +4,7 @@ Browse selected Are.na channels in Finder, preview files, and drag files into wr
 
 ## Install
 
-Requires macOS 13+, Swift 5.9+, an Apple Development signing identity, and the sibling `../webloc-thumbnail-generator` project. Its preview libraries are bundled into the app; installed copies do not need the source folder.
+Requires macOS 13+, Swift 5.9+, and an Apple Development signing identity. Website capture and thumbnail rendering are included in this repository; no other checkout or third-party package is required.
 
 ```sh
 bash scripts/install.sh

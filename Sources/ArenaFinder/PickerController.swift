@@ -170,7 +170,6 @@ final class PickerController: NSWindowController, NSMenuDelegate {
         addButton.isEnabled = client != nil && !loading
         statusLabel.stringValue = client == nil && loading ? "Connecting…" : message
         statusLabel.isHidden = statusLabel.stringValue.isEmpty
-        updateMenu()
         fitWindow()
     }
     @objc private func openTokens() { NSWorkspace.shared.open(URL(string: "https://www.are.na/settings/personal-access-tokens")!) }
@@ -220,7 +219,7 @@ final class PickerController: NSWindowController, NSMenuDelegate {
     private func fetchChannels(page: Int) async throws {
         guard let client, let user else { return }
         let result = try await client.channels(userID: user.id, page: page)
-        for channel in result.data { try store.save(channel.destination) }
+        try store.save(result.data.map(\.destination))
         nextPage = result.meta.next_page
         if store.destinations.isEmpty { message = "No channels found. Add one by URL." }
     }

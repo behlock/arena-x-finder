@@ -15,6 +15,47 @@ final class ProviderTests: XCTestCase {
             FinderConfiguration(accountID: 1, channels: [DemoProviderBackend.channel])
         }
     }
+    func testCachedLookupsDoNotRewriteDatabase() async throws {
+        let state = directory.appendingPathComponent("state")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        var snapshot = ProviderEngine.Snapshot()
+        snapshot.listingPageSize = ArenaClient.channelContentsPageSize
+        snapshot.nestedChannelFolders = true
+        snapshot.records["channel-1"] = .channel(DemoProviderBackend.channel)
+        for id in 1...300 {
+            let block = try JSONDecoder().decode(RemoteBlock.self, from: Data("{\"id\":\(id),\"type\":\"Link\",\"source\":{\"url\":\"https://example.com/\(id)\"}}".utf8))
+            let record = try ProviderRecord.block(block, channelID: 1, parent: "channel-1")
+            snapshot.records[record.id] = record
+        }
+        let database = state.appendingPathComponent("provider-state.json")
+        try JSONEncoder().encode(snapshot).write(to: database)
+        let engine = try ProviderEngine(directory: state, backend: TestBackend(),
+            websiteThumbnails: WebsiteThumbnailStore(directory: directory.appendingPathComponent("websites"))) {
+            FinderConfiguration(accountID: 1, channels: [DemoProviderBackend.channel])
+        }
+        _ = try await engine.item("block-1-1")
+        let before = try FileManager.default.attributesOfItem(atPath: database.path)[.modificationDate] as? Date
+        let start = Date()
+        for id in 1...200 { _ = try await engine.item("block-1-\(id)") }
+        print("CACHED_LOOKUP_SECONDS=\(Date().timeIntervalSince(start))")
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: database.path)[.modificationDate] as? Date, before)
+    }
+
+    func testConcurrentThumbnailRequestsShareOneDownload() async throws {
+        let backend = TestBackend()
+        await backend.enableThumbnails()
+        let engine = try engine(backend)
+        _ = try await engine.list("channel-1")
+        async let first = engine.thumbnail("block-1-1")
+        async let second = engine.thumbnail("block-1-1")
+        let images = try await [first, second]
+        XCTAssertEqual(images, [Data([1, 2, 3]), Data([1, 2, 3])])
+        let cached = try await engine.thumbnail("block-1-1")
+        XCTAssertEqual(cached, images[0])
+        let downloads = await backend.thumbnailDownloads
+        XCTAssertEqual(downloads, 1)
+    }
+
     func testListingFolderDoesNotDownloadContentOrFollowNextPage() async throws {
         let backend = TestBackend()
         let engine = try engine(backend)
@@ -432,6 +473,9 @@ final class ProviderTests: XCTestCase {
 }
 
 private actor TestBackend: ProviderBackend {
+    var thumbnailDownloads = 0
+    var thumbnailsEnabled = false
+    func enableThumbnails() { thumbnailsEnabled = true }
     var listingFailure = false
     var listingDelay: UInt64 = 0
     func setListingFailure(_ value: Bool) { listingFailure = value }
@@ -462,7 +506,12 @@ private actor TestBackend: ProviderBackend {
         return ProviderPage(records: [ProviderRecord(id: "block-1-\(page)", parent: parent, filename: "Example.txt", typeIdentifier: "public.plain-text", channelID: 1, blockID: page)], nextPage: page == 1 ? 2 : nil)
     }
     func contents(_ record: ProviderRecord) async throws -> Data { downloads += 1; return Data("hello".utf8) }
-    func thumbnail(_ record: ProviderRecord) async throws -> Data? { nil }
+    func thumbnail(_ record: ProviderRecord) async throws -> Data? {
+        guard thumbnailsEnabled else { return nil }
+        thumbnailDownloads += 1
+        try await Task.sleep(nanoseconds: 30_000_000)
+        return Data([1, 2, 3])
+    }
     func upload(_ file: URL, filename: String) async throws -> URL { URL(string: "https://example.com/file")! }
     func create(source: URL, filename: String, channelID: Int) async throws -> Int {
         creates += 1

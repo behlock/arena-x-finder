@@ -103,10 +103,22 @@ public final class ArenaFileProviderExtension: NSObject, NSFileProviderReplicate
                                 completionHandler: @escaping (Error?) -> Void) -> Progress {
         let progress = Progress(totalUnitCount: Int64(identifiers.count))
         let task = Task {
-            for id in identifiers {
-                do { try Task.checkCancellation(); let data = try await engine.get().thumbnail(FileProviderItem.key(id)); perThumbnailCompletionHandler(id, data, nil) }
-                catch { perThumbnailCompletionHandler(id, nil, Self.error(error)) }
-                progress.completedUnitCount += 1
+            await withTaskGroup(of: (NSFileProviderItemIdentifier, Data?, Error?).self) { group in
+                var pending = identifiers.makeIterator()
+                func schedule(_ id: NSFileProviderItemIdentifier) {
+                    group.addTask {
+                        do {
+                            try Task.checkCancellation()
+                            return (id, try await self.engine.get().thumbnail(FileProviderItem.key(id)), nil)
+                        } catch { return (id, nil, Self.error(error)) }
+                    }
+                }
+                for _ in 0..<4 { if let id = pending.next() { schedule(id) } }
+                for await (id, data, error) in group {
+                    perThumbnailCompletionHandler(id, data, error)
+                    progress.completedUnitCount += 1
+                    if let id = pending.next() { schedule(id) }
+                }
             }
             completionHandler(nil)
         }

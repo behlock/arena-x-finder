@@ -52,6 +52,7 @@ public actor ProviderEngine {
     private let now: () -> Date
     private var browseRetryAfter: [String: Date] = [:]
     private var runningImports: Set<String> = []
+    private var thumbnailTasks: [String: Task<Data?, Error>] = [:]
     private var pageTasks: [String: Task<[ProviderRecord], Error>] = [:]
     public init(directory: URL, backend: any ProviderBackend, websiteThumbnails: WebsiteThumbnailStore? = nil, now: @escaping () -> Date = Date.init, configuration: @escaping () throws -> FinderConfiguration) throws {
         self.now = now
@@ -93,14 +94,15 @@ public actor ProviderEngine {
     }
     private func loadConfiguration() throws -> FinderConfiguration {
         let config = try configuration()
+        let revision = snapshot.revision
         for channel in config.channels { remember(.channel(channel)) }
-        updateWebsiteThumbnails()
-        try persist()
+        if snapshot.revision != revision { try persist() }
         return config
     }
-    private func updateWebsiteThumbnails() {
+    private func updateWebsiteThumbnails(ids: [String]? = nil) {
         guard let websiteThumbnails else { return }
-        for var record in Array(snapshot.records.values) {
+        let records = ids.map { $0.compactMap { snapshot.records[$0] } } ?? Array(snapshot.records.values)
+        for var record in records {
             guard let url = record.websiteURL else { continue }
             if record.thumbnail == nil { try? websiteThumbnails.enqueue(url) }
             if let result = websiteThumbnails.result(for: url), let revision = result.revision {
@@ -174,7 +176,7 @@ public actor ProviderEngine {
         if snapshot.pageFetchedAt == nil { snapshot.pageFetchedAt = [:] }
         snapshot.pageFetchedAt?[parent] = now()
         browseRetryAfter.removeValue(forKey: parent)
-        updateWebsiteThumbnails()
+        updateWebsiteThumbnails(ids: records.map(\.id))
         try persist()
         return records.compactMap { snapshot.records[$0.id] }
     }
@@ -219,6 +221,13 @@ public actor ProviderEngine {
         if let url = record.websiteURL, let data = websiteThumbnails?.image(for: url) { return data }
         let cache = directory.appendingPathComponent("thumbnail-" + record.fingerprint)
         if let data = try? Data(contentsOf: cache) { return data }
+        if let task = thumbnailTasks[id] { return try await task.value }
+        let task = Task { try await self.fetchThumbnail(record, cache: cache) }
+        thumbnailTasks[id] = task
+        defer { thumbnailTasks[id] = nil }
+        return try await task.value
+    }
+    private func fetchThumbnail(_ record: ProviderRecord, cache: URL) async throws -> Data? {
         let data: Data?
         do { data = try await backend.thumbnail(record) }
         catch {
@@ -247,6 +256,9 @@ public actor ProviderEngine {
     }
     public func changes(after revision: Int, parent: String? = nil) throws -> (updated: [ProviderRecord], deleted: [String], revision: Int) {
         _ = try loadConfiguration()
+        let previous = snapshot.revision
+        updateWebsiteThumbnails(ids: parent.flatMap { snapshot.loadedPages[$0] })
+        if snapshot.revision != previous { try persist() }
         let ids = Set(snapshot.changes.filter { $0.revision > revision && (parent == nil || $0.parent == parent) }.map(\.id))
         return (ids.compactMap { snapshot.records[$0] }, ids.filter { snapshot.records[$0] == nil }, snapshot.revision)
     }

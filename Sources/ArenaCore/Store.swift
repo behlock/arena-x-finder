@@ -1,7 +1,7 @@
 import Foundation
 
 public final class Store {
-    private struct State: Codable {
+    private struct State: Codable, Equatable {
         var destinations: [Destination] = []
         var accountID: Int?
         var lastDestinationID: String?
@@ -26,15 +26,19 @@ public final class Store {
         try persist(State(accountID: id))
     }
 
-    public func save(_ destination: Destination) throws {
-        guard destination.channelID > 0, !destination.name.isEmpty,
-              destination.slug.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else {
-            throw BridgeError.message("Invalid Are.na channel.")
-        }
+    public func save(_ destination: Destination) throws { try save([destination]) }
+
+    public func save(_ destinations: [Destination]) throws {
         var next = state
-        if let index = next.destinations.firstIndex(where: { $0.id == destination.id }) {
-            next.destinations[index] = destination
-        } else { next.destinations.append(destination) }
+        for destination in destinations {
+            guard destination.channelID > 0, !destination.name.isEmpty,
+                  destination.slug.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else {
+                throw BridgeError.message("Invalid Are.na channel.")
+            }
+            if let index = next.destinations.firstIndex(where: { $0.id == destination.id }) {
+                next.destinations[index] = destination
+            } else { next.destinations.append(destination) }
+        }
         try persist(next)
     }
 
@@ -46,6 +50,7 @@ public final class Store {
     }
 
     private func persist(_ next: State) throws {
+        guard next != state || !FileManager.default.fileExists(atPath: stateURL.path) else { return }
         try JSONEncoder().encode(next).write(to: stateURL, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateURL.path)
         state = next

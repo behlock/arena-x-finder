@@ -45,6 +45,19 @@ final class StoreTests: XCTestCase {
         XCTAssertFalse(catalog.contains("jobs"))
     }
 
+    func testChannelPageSavesAtomicallyAndUnchangedResultsDoNotRewriteCatalog() throws {
+        let store = try Store(directory: directory)
+        let channels = (1...24).map { Destination(channelID: $0, name: "Channel \($0)", slug: "channel-\($0)") }
+        try store.save(channels)
+        let catalog = directory.appendingPathComponent("channels.json")
+        let before = try FileManager.default.attributesOfItem(atPath: catalog.path)[.modificationDate] as? Date
+        try store.save(channels)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: catalog.path)[.modificationDate] as? Date, before)
+        let invalid = Destination(channelID: 25, name: "Invalid", slug: "../invalid")
+        XCTAssertThrowsError(try store.save([Destination(channelID: 26, name: "Valid", slug: "valid"), invalid]))
+        XCTAssertEqual(try Store(directory: directory).destinations, channels)
+    }
+
     func testInvalidChannelDoesNotChangeCatalog() throws {
         let store = try Store(directory: directory)
         for destination in [Destination(channelID: 0, name: "Test", slug: "test"),

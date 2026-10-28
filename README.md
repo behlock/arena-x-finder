@@ -1,18 +1,15 @@
-# Are.na x Finder
+# are.na x finder
 
-Your Are.na channels in Finder, with nested folders, website previews, and drag-and-drop uploads.
+are.na channels in Finder, with nested folders, website previews, and drag-and-drop uploads
 
-## Install
+## install
 
 ```sh
-git clone https://github.com/behlock/arena-x-finder.git
-cd arena-x-finder
 bash scripts/install.sh
 open "$HOME/Applications/Are.na x Finder.app"
 ```
 
-## Use
+## use
 
-1. Connect with an Are.na [access token](https://www.are.na/settings/personal-access-tokens) with write access.
-2. Choose a channel and click **Add to Finder**, or paste its URL.
-3. Browse **Are.na x Finder** in Finder’s Locations.
+1. use an are.na [access token](https://www.are.na/settings/personal-access-tokens) with write access
+2. choose a channel and click **add to finder**, or paste its URL
